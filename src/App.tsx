@@ -334,7 +334,7 @@ export default function App() {
   const [ollamaModel, setOllamaModel] = useState('llama3');
   const [openRouterApiKey, setOpenRouterApiKey] = useState('');
   const [openRouterModel, setOpenRouterModel] = useState('meta-llama/llama-3-8b-instruct:free');
-  const [groqApiKey, setGroqApiKey] = useState('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');
+  const [groqApiKey, setGroqApiKey] = useState('');
   const [groqModel, setGroqModel] = useState('llama3-8b-8192');
   const [n8nWebhookUrl, setN8nWebhookUrl] = useState('https://n8n.aisetuppros.com/webhook/social-sync');
   const [generatedApiKey, setGeneratedApiKey] = useState<string | null>(null);
