@@ -1,0 +1,233 @@
+{
+  "entities": {
+    "Workspace": {
+      "title": "Workspace",
+      "description": "A workspace representing a brand or company.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The name of the workspace."
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "The UID of the user who owns the workspace."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "members": {
+          "type": "object",
+          "description": "Map of user IDs to their roles (admin, editor, viewer).",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["admin", "editor", "viewer"]
+          }
+        }
+      },
+      "required": ["name", "ownerId", "createdAt"]
+    },
+    "ScheduledPost": {
+      "title": "ScheduledPost",
+      "description": "A post scheduled to be published to social media.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "The ID of the workspace this post belongs to."
+        },
+        "content": {
+          "type": "string",
+          "description": "The text content of the post."
+        },
+        "platforms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The platforms to publish to."
+        },
+        "scheduledFor": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["scheduled", "published", "failed", "draft"]
+        },
+        "mediaUrls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "isReel": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "content", "platforms", "status", "createdAt"]
+    },
+    "Comment": {
+      "title": "Comment",
+      "description": "A comment received from a social media platform.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "The ID of the workspace this comment belongs to."
+        },
+        "platform": {
+          "type": "string"
+        },
+        "author": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "replied"]
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "platform", "author", "text", "status", "timestamp"]
+    },
+    "AutomationSettings": {
+      "title": "AutomationSettings",
+      "description": "Settings for auto-reply and integrations for a workspace.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string"
+        },
+        "autoReplyEnabled": {
+          "type": "boolean"
+        },
+        "aiPersona": {
+          "type": "string"
+        },
+        "ghlApiKey": {
+          "type": "string"
+        },
+        "ghlLocationId": {
+          "type": "string"
+        },
+        "connectedPlatforms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "autoReplyEnabled", "aiPersona"]
+    },
+    "ApiKey": {
+      "title": "ApiKey",
+      "description": "An API key for external integrations to access a workspace.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": ["workspaceId", "key", "createdAt", "name"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "A notification for a user.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "The ID of the user who receives the notification."
+        },
+        "message": {
+          "type": "string",
+          "description": "The notification message."
+        },
+        "read": {
+          "type": "boolean",
+          "description": "Whether the notification has been read."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "message", "read", "createdAt"]
+    },
+    "MediaAsset": {
+      "title": "MediaAsset",
+      "description": "A saved media asset for a workspace.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "url", "name", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/workspaces/{workspaceId}": {
+      "schema": "Workspace",
+      "description": "Workspaces owned by users."
+    },
+    "/posts/{postId}": {
+      "schema": "ScheduledPost",
+      "description": "Scheduled posts."
+    },
+    "/comments/{commentId}": {
+      "schema": "Comment",
+      "description": "Incoming comments."
+    },
+    "/automationSettings/{settingId}": {
+      "schema": "AutomationSettings",
+      "description": "Automation settings for workspaces."
+    },
+    "/apiKeys/{apiKeyId}": {
+      "schema": "ApiKey",
+      "description": "API keys for workspaces."
+    },
+    "/mediaAssets/{assetId}": {
+      "schema": "MediaAsset",
+      "description": "Saved media assets for workspaces."
+    }
+  }
+}
