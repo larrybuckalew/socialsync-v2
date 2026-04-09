@@ -45,10 +45,46 @@ import { EmptyState } from './components/EmptyState';
 
 const localizer = momentLocalizer(moment);
 import { GoogleGenAI } from '@google/genai';
-import { db, auth, storage, signInWithGoogle, logOut, handleFirestoreError, OperationType } from './firebase';
-import { collection, query, where, onSnapshot, addDoc, updateDoc, doc, getDocs, setDoc, deleteDoc } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { onAuthStateChanged, User } from 'firebase/auth';
+// Simple API auth - replaces Firebase
+interface SimpleUser { uid: string; email: string | null; displayName: string | null; }
+
+async function apiGet(path: string) {
+  const r = await fetch(path, { credentials: 'include' });
+  if (!r.ok) throw new Error('API error');
+  return r.json();
+}
+async function apiPost(path: string, body: any) {
+  const r = await fetch(path, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body), credentials: 'include' });
+  return r.json();
+}
+async function apiPatch(path: string, body: any) {
+  const r = await fetch(path, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body), credentials: 'include' });
+  return r.json();
+}
+async function apiDel(path: string) {
+  const r = await fetch(path, { method: 'DELETE', credentials: 'include' });
+  return r.json();
+}
+
+// Mock Firestore-style helpers
+async function getDocs(path: string) {
+  const data = await apiGet(path);
+  return { docs: data.workspaces ? data.workspaces.map((w: any) => ({ id: w.id, data: () => w })) : data.posts ? data.posts.map((p: any) => ({ id: p.id, data: () => p })) : data.notifications ? data.notifications.map((n: any) => ({ id: n.id, data: () => n })) : [] };
+}
+async function addDoc(path: string, data: any) {
+  const result = await apiPost(path, data);
+  return { id: result.id };
+}
+async function updateDoc(path: string, data: any) {
+  await apiPatch(path, data);
+}
+async function deleteDoc(path: string) {
+  await apiDel(path);
+}
+function doc(db: any, col: string, id: string) { return `/${col}/${id}`; }
+function collection(db: any, name: string) { return `/${name}`; }
+const handleFirestoreError = (e: any) => console.error(e);
+const OperationType = { CREATE: 'create', UPDATE: 'update', DELETE: 'delete', LIST: 'list', GET: 'get', WRITE: 'write' };
 
 type Platform = 'twitter' | 'facebook' | 'instagram' | 'tiktok' | 'pinterest' | 'linkedin' | 'youtube' | 'reddit' | 'telegram' | 'wordpress' | 'ghl';
 
@@ -112,7 +148,9 @@ const MediaLibrary = ({ workspaceId }: { workspaceId: string }) => {
 
   useEffect(() => {
     const q = query(collection(db, 'mediaAssets'), where('workspaceId', '==', workspaceId));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+    const unsubscribe = // onSnapshot replaced with fetch
+    // Real implementation would need polling or websockets
+    apiGet(q as string).then((data: any) => {
       setAssets(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as MediaAsset)));
     });
     return unsubscribe;
@@ -265,9 +303,9 @@ export default function App() {
   const handleBulkAction = async (action: 'delete' | 'publish' | 'draft') => {
     for (const postId of selectedPostIds) {
       if (action === 'delete') {
-        await deleteDoc(doc(db, 'posts', postId));
+        await deleteDoc('/posts/' + postId);
       } else {
-        await updateDoc(doc(db, 'posts', postId), { status: action === 'publish' ? 'published' : 'draft' });
+        await updateDoc('/posts/' + postId, { status: action === 'publish' ? 'published' : 'draft' });
       }
     }
     setSelectedPostIds([]);
@@ -296,36 +334,60 @@ export default function App() {
   }, [darkMode]);
 
   useEffect(() => {
-    if (!auth.currentUser) return;
-    const q = query(collection(db, 'notifications'), where('userId', '==', auth.currentUser.uid));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setNotifications(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification)));
+    if (!user) return;
+    const q = query(collection(db, 'notifications'), where('userId', '==', user.uid));
+    const unsubscribe = // onSnapshot replaced with fetch
+    // Real implementation would need polling or websockets
+    apiGet(q as string).then((data: any) => {
+      setNotifications((data.notifications || []).map((n: any) => ({ id: n.id, ...n } as Notification)));
     });
     return () => unsubscribe();
-  }, [auth.currentUser]);
+  }, [user]);
 
   useEffect(() => {
-    if (!activeWorkspace || !auth.currentUser) {
+    if (!activeWorkspace || !user) {
       setUserRole(null);
       return;
     }
-    const unsubscribe = onSnapshot(doc(db, 'workspaces', activeWorkspace), (doc) => {
+    const unsubscribe = onSnapshot('/workspaces/' + activeWorkspace, (doc) => {
       const data = doc.data();
       if (data && data.members) {
-        setUserRole(data.members[auth.currentUser!.uid] || null);
+        setUserRole(data.members[user?.uid] || null);
       } else {
         setUserRole(null);
       }
     });
     return () => unsubscribe();
-  }, [activeWorkspace, auth.currentUser]);
+  }, [activeWorkspace, user]);
 
   const [isSavingPersona, setIsSavingPersona] = useState(false);
   const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
 
   // Auth State
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<SimpleUser | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [showLoginForm, setShowLoginForm] = useState(false);
+  const [loginUsername, setLoginUsername] = useState('admin');
+  const [loginPassword, setLoginPassword] = useState('socialsync2026');
+  const [loginError, setLoginError] = useState('');
+
+  const handleSimpleLogin = async () => {
+    setLoginError('');
+    try {
+      const result = await apiPost('/api/login', { username: loginUsername, password: loginPassword });
+      if (result.success) {
+        setUser({ uid: 'local-user', email: loginUsername, displayName: loginUsername });
+        setShowLoginForm(false);
+      } else {
+        setLoginError(result.error || 'Login failed');
+      }
+    } catch { setLoginError('Connection error'); }
+  };
+
+  const handleSimpleLogout = async () => {
+    await apiPost('/api/logout', {});
+    setUser(null);
+  };
 
   // Settings State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -353,7 +415,7 @@ export default function App() {
   const handleCreateWorkspace = async () => {
     if (!newWorkspaceName.trim() || !user) return;
     try {
-      const newWsRef = await addDoc(collection(db, 'workspaces'), {
+      const newWsRef = await addDoc('/api/workspaces', {
         name: newWorkspaceName.trim(),
         ownerId: user.uid,
         createdAt: new Date().toISOString()
@@ -430,7 +492,7 @@ export default function App() {
       
       // Notify the owner of the post
       await addDoc(collection(db, 'notifications'), {
-        userId: auth.currentUser?.uid, // This should be the owner, but for now using current user
+        userId: user?.uid, // This should be the owner, but for now using current user
         message: `Post status changed to ${newStatus}`,
         read: false,
         createdAt: new Date().toISOString()
@@ -483,7 +545,7 @@ export default function App() {
 
   const handleMarkAsPublished = async (postId: string) => {
     try {
-      await updateDoc(doc(db, 'posts', postId), { status: 'published' });
+      await updateDoc('/posts/' + postId, { status: 'published' });
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `posts/${postId}`);
     }
@@ -859,7 +921,7 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
     // Fetch workspaces
     const fetchWorkspaces = async () => {
       try {
-        const q = query(collection(db, 'workspaces'), where('ownerId', '==', user.uid));
+        const q = collection(db, 'workspaces');
         const querySnapshot = await getDocs(q);
         const wsData: Workspace[] = [];
         querySnapshot.forEach((doc) => {
@@ -868,7 +930,7 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
         
         if (wsData.length === 0) {
           // Create default workspace
-          const newWsRef = await addDoc(collection(db, 'workspaces'), {
+          const newWsRef = await addDoc('/api/workspaces', {
             name: 'Personal Brand',
             ownerId: user.uid,
             createdAt: new Date().toISOString()
@@ -895,7 +957,7 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
     if (!isAuthReady || !user || !activeWorkspace) return;
 
     // Listen to posts
-    const qPosts = query(collection(db, 'posts'), where('workspaceId', '==', activeWorkspace), where('ownerId', '==', user.uid));
+    const qPosts = collection(db, 'posts');
     const unsubPosts = onSnapshot(qPosts, (snapshot) => {
       const postsData: ScheduledPost[] = [];
       snapshot.forEach(doc => {
@@ -1386,7 +1448,7 @@ Please write a short, engaging reply to the following user comment:
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Welcome to SocialSync</h1>
           <p className="text-gray-500 mb-8">Sign in to manage your workspaces, schedule posts, and automate your social media.</p>
           <button 
-            onClick={signInWithGoogle}
+            onClick={() => { setShowLoginForm(true); }}
             className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-3 px-4 rounded-xl transition-colors flex items-center justify-center"
           >
             Sign in with Google
@@ -1859,7 +1921,7 @@ Please write a short, engaging reply to the following user comment:
                 <p className="text-xs text-gray-500">Pro Plan</p>
               </div>
             </div>
-            <button onClick={logOut} className="text-gray-400 hover:text-red-500 transition-colors" title="Sign Out">
+            <button onClick={handleSimpleLogout} className="text-gray-400 hover:text-red-500 transition-colors" title="Sign Out">
               <X className="w-4 h-4" />
             </button>
           </div>

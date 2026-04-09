@@ -18,12 +18,80 @@ app.use(session({
   resave: false,
   saveUninitialized: false, // Don't save empty sessions to save memory/storage
   cookie: {
-    secure: true,      // Required for SameSite=None
-    sameSite: 'none',  // Required for cross-origin iframe
+    secure: false,     // Set true in production with HTTPS
+    sameSite: 'lax',   // Works better than 'none' for cross-origin
     httpOnly: true,    // Security best practice
     maxAge: 24 * 60 * 60 * 1000 // 24 hours
   }
 }));
+
+// --- Simple Password Auth ---
+const APP_USER = process.env.APP_USER || 'admin';
+const APP_PASS = process.env.APP_PASS || 'socialsync2026';
+
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body;
+  if (username === APP_USER && password === APP_PASS) {
+    (req.session as any).user = { name: username, loginTime: new Date().toISOString() };
+    return res.json({ success: true, user: { name: username } });
+  }
+  res.status(401).json({ error: 'Invalid credentials' });
+});
+
+app.post('/api/logout', (req, res) => {
+  req.session.destroy(() => res.json({ success: true }));
+});
+
+app.get('/api/me', (req, res) => {
+  const user = (req.session as any)?.user;
+  if (user) return res.json({ user });
+  res.status(401).json({ error: 'Not authenticated' });
+});
+
+// In-memory workspaces/posts store (replaces Firebase for now)
+const store: any = {
+  workspaces: [{ id: 'default', name: 'My Workspace', ownerId: 'local-user', createdAt: new Date().toISOString() }],
+  posts: [],
+  notifications: [],
+};
+
+// Middleware: require auth for data endpoints
+function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!(req.session as any)?.user) return res.status(401).json({ error: 'Not authenticated' });
+  next();
+}
+
+// --- Data API (replaces Firebase Firestore) ---
+app.get('/api/workspaces', requireAuth, (req, res) => {
+  res.json({ workspaces: store.workspaces });
+});
+
+app.post('/api/posts', requireAuth, (req, res) => {
+  const post = { ...req.body, id: Date.now().toString(), createdAt: new Date().toISOString() };
+  store.posts.push(post);
+  res.json({ id: post.id });
+});
+
+app.get('/api/posts', requireAuth, (req, res) => {
+  const workspaceId = req.query.workspaceId as string;
+  const posts = workspaceId ? store.posts.filter((p: any) => p.workspaceId === workspaceId) : store.posts;
+  res.json({ posts });
+});
+
+app.patch('/api/posts/:id', requireAuth, (req, res) => {
+  const idx = store.posts.findIndex((p: any) => p.id === req.params.id);
+  if (idx >= 0) { store.posts[idx] = { ...store.posts[idx], ...req.body }; return res.json({ success: true }); }
+  res.status(404).json({ error: 'Not found' });
+});
+
+app.delete('/api/posts/:id', requireAuth, (req, res) => {
+  store.posts = store.posts.filter((p: any) => p.id !== req.params.id);
+  res.json({ success: true });
+});
+
+app.get('/api/notifications', requireAuth, (req, res) => {
+  res.json({ notifications: store.notifications });
+});
 
 // --- OAuth Routes ---
 
