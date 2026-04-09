@@ -1,0 +1,55 @@
+118:    return unsubscribe;
+122:    if (!file.type.startsWith('image/')) return file;
+124:    return new Promise((resolve) => {
+149:    if (!e.target.files || e.target.files.length === 0) return;
+171:  return (
+277:    if (!selectedPostIds || selectedPostIds.length === 0) return null;
+278:    return (
+299:    if (!auth.currentUser) return;
+304:    return () => unsubscribe();
+310:      return;
+320:    return () => unsubscribe();
+345:    if (!newWorkspaceName.trim() || !user) return;
+362:    if (!activeWorkspace) return;
+386:    if (files.length === 0) return;
+435:    if (post.status !== 'published' || !post.postMediaAssets) return;
+441:    if (!oauthData || !oauthData.accessToken) return;
+466:    if (!postToDelete) return;
+544:          return;
+570:          return;
+600:    if (!content.trim()) return;
+629:    if (!content.trim()) return;
+669:          return;
+693:          return;
+727:      return;
+766:    if (!activeWorkspace || !user) return;
+781:    if (!repurposeSource.trim() || !activeWorkspace || !user) return;
+836:    return () => unsubscribe();
+844:      return;
+886:    if (!isAuthReady || !user || !activeWorkspace) return;
+958:    return () => {
+968:    if (!content && postMediaAssets.length === 0) return;
+972:    return () => clearTimeout(timer);
+986:      return;
+991:      return;
+1023:        return; // Stop execution if we can't save to DB
+1043:              return { platform, success: true };
+1046:              return { platform, success: false, error: e };
+1049:          return { platform, success: false, error: 'No native connection' };
+1076:              errorData = { message: `Server returned ${response.status}` };
+1088:              return; // Don't clear form if they want to fix it
+1102:          return; // Don't clear form so user can retry
+1147:      if (!comment) return;
+1156:        return;
+1218:          return;
+1242:          return;
+1345:    return () => window.removeEventListener('message', handleMessage);
+1363:    return (
+1371:    return (
+1390:  return (
+1681:                  return (
+1927:                    return (
+2048:                    return (
+2464:                      return days;
+2511:                          return (
+2617:                    return (
