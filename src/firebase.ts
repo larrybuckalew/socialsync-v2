@@ -1,23 +1,30 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
-import { getStorage } from 'firebase/storage';
+// Firebase stub - app now uses simple session auth + REST API
+// All Firebase functions are stubbed to prevent import errors
 
-const firebaseConfig = {
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || '',
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || '',
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || '',
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '',
-  firestoreDatabaseId: import.meta.env.VITE_FIREBASE_DATABASE_ID || '',
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '',
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || '',
+export const db = null as any;
+export const auth = null as any;
+export const storage = null as any;
+
+export const onSnapshot = (path: string, callback: (doc: any) => void) => {
+  // Stub - returns no-op unsubscribe
+  console.warn('onSnapshot stub called for:', path);
+  return () => {};
 };
 
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const auth = getAuth(app);
-export const storage = getStorage(app, firebaseConfig.storageBucket ? `gs://${firebaseConfig.storageBucket}` : undefined);
+export const collection = (db: any, name: string) => ({ _path: name, _type: 'collection' });
+export const doc = (db: any, path: string) => ({ _path: path, _type: 'doc' });
+export const query = (...args: any[]) => ({ _type: 'query', args });
+export const where = (field: string, op: string, value: any) => ({ _type: 'where', field, op, value });
+export const getDocs = async (ref: any) => ({ empty: true, docs: [], forEach: () => {} });
+export const getDoc = async (ref: any) => ({ exists: () => false, data: () => ({}) });
+export const addDoc = async (ref: any, data: any) => ({ id: 'stub-' + Date.now() });
+export const setDoc = async (ref: any, data: any) => {};
+export const updateDoc = async (ref: any, data: any) => {};
+export const deleteDoc = async (ref: any) => {};
+export const onAuthStateChanged = (auth: any, callback: (user: any) => void) => {
+  callback(null);
+  return () => {};
+};
 
 export enum OperationType {
   CREATE = 'create',
@@ -32,57 +39,12 @@ export interface FirestoreErrorInfo {
   error: string;
   operationType: OperationType;
   path: string | null;
-  authInfo: {
-    userId?: string;
-    email?: string | null;
-    emailVerified?: boolean;
-    isAnonymous?: boolean;
-    tenantId?: string | null;
-    providerInfo?: {
-      providerId: string;
-      displayName: string | null;
-      email: string | null;
-      photoUrl: string | null;
-    }[];
-  }
+  authInfo: any;
 }
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
-    },
-    operationType,
-    path
-  };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  console.warn('FirestoreError (stub):', error, operationType, path);
 }
 
-export const signInWithGoogle = async () => {
-  const provider = new GoogleAuthProvider();
-  try {
-    await signInWithPopup(auth, provider);
-  } catch (error) {
-    console.error("Error signing in with Google", error);
-  }
-};
-
-export const logOut = async () => {
-  try {
-    await signOut(auth);
-  } catch (error) {
-    console.error("Error signing out", error);
-  }
-};
+export const signInWithGoogle = async () => { console.warn('signInWithGoogle stub'); };
+export const logOut = async () => { console.warn('logOut stub'); };
