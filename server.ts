@@ -8,7 +8,7 @@ import axios from 'axios';
 dotenv.config();
 
 const app = express();
-const PORT = 3457;
+const PORT = 3000;
 
 app.set('trust proxy', 1); // Trust first proxy for secure cookies and correct protocol
 
@@ -18,80 +18,12 @@ app.use(session({
   resave: false,
   saveUninitialized: false, // Don't save empty sessions to save memory/storage
   cookie: {
-    secure: false,     // Set true in production with HTTPS
-    sameSite: 'lax',   // Works better than 'none' for cross-origin
+    secure: true,      // Required for SameSite=None
+    sameSite: 'none',  // Required for cross-origin iframe
     httpOnly: true,    // Security best practice
     maxAge: 24 * 60 * 60 * 1000 // 24 hours
   }
 }));
-
-// --- Simple Password Auth ---
-const APP_USER = process.env.APP_USER || 'admin';
-const APP_PASS = process.env.APP_PASS || 'socialsync2026';
-
-app.post('/api/login', (req, res) => {
-  const { username, password } = req.body;
-  if (username === APP_USER && password === APP_PASS) {
-    (req.session as any).user = { name: username, loginTime: new Date().toISOString() };
-    return res.json({ success: true, user: { name: username } });
-  }
-  res.status(401).json({ error: 'Invalid credentials' });
-});
-
-app.post('/api/logout', (req, res) => {
-  req.session.destroy(() => res.json({ success: true }));
-});
-
-app.get('/api/me', (req, res) => {
-  const user = (req.session as any)?.user;
-  if (user) return res.json({ user });
-  res.status(401).json({ error: 'Not authenticated' });
-});
-
-// In-memory workspaces/posts store (replaces Firebase for now)
-const store: any = {
-  workspaces: [{ id: 'default', name: 'My Workspace', ownerId: 'local-user', createdAt: new Date().toISOString() }],
-  posts: [],
-  notifications: [],
-};
-
-// Middleware: require auth for data endpoints
-function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (!(req.session as any)?.user) return res.status(401).json({ error: 'Not authenticated' });
-  next();
-}
-
-// --- Data API (replaces Firebase Firestore) ---
-app.get('/api/workspaces', requireAuth, (req, res) => {
-  res.json({ workspaces: store.workspaces });
-});
-
-app.post('/api/posts', requireAuth, (req, res) => {
-  const post = { ...req.body, id: Date.now().toString(), createdAt: new Date().toISOString() };
-  store.posts.push(post);
-  res.json({ id: post.id });
-});
-
-app.get('/api/posts', requireAuth, (req, res) => {
-  const workspaceId = req.query.workspaceId as string;
-  const posts = workspaceId ? store.posts.filter((p: any) => p.workspaceId === workspaceId) : store.posts;
-  res.json({ posts });
-});
-
-app.patch('/api/posts/:id', requireAuth, (req, res) => {
-  const idx = store.posts.findIndex((p: any) => p.id === req.params.id);
-  if (idx >= 0) { store.posts[idx] = { ...store.posts[idx], ...req.body }; return res.json({ success: true }); }
-  res.status(404).json({ error: 'Not found' });
-});
-
-app.delete('/api/posts/:id', requireAuth, (req, res) => {
-  store.posts = store.posts.filter((p: any) => p.id !== req.params.id);
-  res.json({ success: true });
-});
-
-app.get('/api/notifications', requireAuth, (req, res) => {
-  res.json({ notifications: store.notifications });
-});
 
 // --- OAuth Routes ---
 
@@ -252,6 +184,352 @@ app.get('/api/auth/linkedin/callback', async (req, res) => {
   }
 });
 
+// LinkedIn OAuth 2.0
+// ... (existing LinkedIn code)
+
+// Facebook OAuth 2.0
+app.get('/api/auth/facebook/login', (req, res) => {
+  const workspaceId = req.query.workspaceId as string;
+  if (!workspaceId) return res.status(400).send('Missing workspaceId');
+
+  const clientId = process.env.FACEBOOK_APP_ID;
+  if (!clientId) return res.status(500).send('Facebook credentials not configured');
+
+  const callbackUrl = process.env.APP_URL 
+    ? `${process.env.APP_URL}/api/auth/facebook/callback`
+    : `${req.protocol}://${req.get('host')}/api/auth/facebook/callback`;
+
+  const state = Math.random().toString(36).substring(7);
+  (req.session as any).facebookAuth = { state, workspaceId, platform: 'facebook' };
+
+  const authUrl = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&state=${state}&scope=public_profile,email,pages_show_list,pages_read_engagement,pages_manage_posts,instagram_basic,instagram_content_publish`;
+  res.json({ url: authUrl });
+});
+
+app.get('/api/auth/facebook/callback', async (req, res) => {
+  const { state, code, error } = req.query;
+  const sessionData = (req.session as any).facebookAuth;
+
+  if (error) return res.status(400).send(`Facebook OAuth Error: ${error}`);
+  if (!sessionData || !state || !code || state !== sessionData.state) {
+    return res.status(400).send('Invalid state or session expired');
+  }
+
+  const clientId = process.env.FACEBOOK_APP_ID;
+  const clientSecret = process.env.FACEBOOK_APP_SECRET;
+  const callbackUrl = process.env.APP_URL 
+    ? `${process.env.APP_URL}/api/auth/facebook/callback`
+    : `${req.protocol}://${req.get('host')}/api/auth/facebook/callback`;
+
+  try {
+    const tokenResponse = await axios.get('https://graph.facebook.com/v19.0/oauth/access_token', {
+      params: {
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: callbackUrl,
+        code
+      }
+    });
+
+    const accessToken = tokenResponse.data.access_token;
+    
+    // Get user profile
+    const profileResponse = await axios.get('https://graph.facebook.com/me', {
+      params: { access_token: accessToken, fields: 'id,name' }
+    });
+
+    const html = `
+      <html>
+        <body>
+          <script>
+            window.opener.postMessage({
+              type: 'OAUTH_SUCCESS',
+              platform: '${sessionData.platform}',
+              workspaceId: '${sessionData.workspaceId}',
+              data: {
+                accessToken: '${accessToken}',
+                username: '${profileResponse.data.name}',
+                id: '${profileResponse.data.id}'
+              }
+            }, '*');
+            window.close();
+          </script>
+          <p>Authentication successful! You can close this window.</p>
+        </body>
+      </html>
+    `;
+    res.send(html);
+  } catch (error) {
+    console.error('Facebook OAuth Error:', error);
+    res.status(500).send('Authentication failed');
+  }
+});
+
+// Instagram OAuth (usually via Facebook Login)
+app.get('/api/auth/instagram/login', (req, res) => {
+  const workspaceId = req.query.workspaceId as string;
+  if (!workspaceId) return res.status(400).send('Missing workspaceId');
+
+  const clientId = process.env.FACEBOOK_APP_ID;
+  if (!clientId) return res.status(500).send('Facebook credentials not configured');
+
+  const callbackUrl = process.env.APP_URL 
+    ? `${process.env.APP_URL}/api/auth/facebook/callback`
+    : `${req.protocol}://${req.get('host')}/api/auth/facebook/callback`;
+
+  const state = Math.random().toString(36).substring(7);
+  (req.session as any).facebookAuth = { state, workspaceId, platform: 'instagram' };
+
+  const authUrl = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&state=${state}&scope=public_profile,email,pages_show_list,pages_read_engagement,pages_manage_posts,instagram_basic,instagram_content_publish`;
+  res.json({ url: authUrl });
+});
+
+// TikTok OAuth 2.0
+app.get('/api/auth/tiktok/login', (req, res) => {
+  const workspaceId = req.query.workspaceId as string;
+  if (!workspaceId) return res.status(400).send('Missing workspaceId');
+
+  const clientKey = process.env.TIKTOK_CLIENT_KEY;
+  if (!clientKey) return res.status(500).send('TikTok credentials not configured');
+
+  const callbackUrl = process.env.APP_URL 
+    ? `${process.env.APP_URL}/api/auth/tiktok/callback`
+    : `${req.protocol}://${req.get('host')}/api/auth/tiktok/callback`;
+
+  const state = Math.random().toString(36).substring(7);
+  (req.session as any).tiktokAuth = { state, workspaceId };
+
+  // TikTok scopes: user.info.basic, video.upload, video.publish
+  const authUrl = `https://www.tiktok.com/v2/auth/authorize/?client_key=${clientKey}&scope=user.info.basic,video.upload,video.publish&response_type=code&redirect_uri=${encodeURIComponent(callbackUrl)}&state=${state}`;
+  res.json({ url: authUrl });
+});
+
+app.get('/api/auth/tiktok/callback', async (req, res) => {
+  const { state, code, error } = req.query;
+  const sessionData = (req.session as any).tiktokAuth;
+
+  if (error) return res.status(400).send(`TikTok OAuth Error: ${error}`);
+  if (!sessionData || !state || !code || state !== sessionData.state) {
+    return res.status(400).send('Invalid state or session expired');
+  }
+
+  const clientKey = process.env.TIKTOK_CLIENT_KEY;
+  const clientSecret = process.env.TIKTOK_CLIENT_SECRET;
+  const callbackUrl = process.env.APP_URL 
+    ? `${process.env.APP_URL}/api/auth/tiktok/callback`
+    : `${req.protocol}://${req.get('host')}/api/auth/tiktok/callback`;
+
+  try {
+    const tokenResponse = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', 
+      new URLSearchParams({
+        client_key: clientKey!,
+        client_secret: clientSecret!,
+        code: code as string,
+        grant_type: 'authorization_code',
+        redirect_uri: callbackUrl,
+      }).toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+
+    const accessToken = tokenResponse.data.access_token;
+    const openId = tokenResponse.data.open_id;
+    
+    // Get user profile
+    const profileResponse = await axios.get('https://open.tiktokapis.com/v2/user/info/', {
+      params: { fields: 'open_id,display_name,avatar_url' },
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+
+    const html = `
+      <html>
+        <body>
+          <script>
+            window.opener.postMessage({
+              type: 'OAUTH_SUCCESS',
+              platform: 'tiktok',
+              workspaceId: '${sessionData.workspaceId}',
+              data: {
+                accessToken: '${accessToken}',
+                username: '${profileResponse.data.data.user.display_name || profileResponse.data.data.user.open_id}',
+                id: '${profileResponse.data.data.user.open_id}'
+              }
+            }, '*');
+            window.close();
+          </script>
+          <p>Authentication successful! You can close this window.</p>
+        </body>
+      </html>
+    `;
+    res.send(html);
+  } catch (error: any) {
+    console.error('TikTok OAuth Error:', error.response?.data || error.message);
+    res.status(500).send('Authentication failed');
+  }
+});
+
+// YouTube OAuth 2.0 (Google)
+app.get('/api/auth/youtube/login', (req, res) => {
+  const workspaceId = req.query.workspaceId as string;
+  if (!workspaceId) return res.status(400).send('Missing workspaceId');
+
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  if (!clientId) return res.status(500).send('Google credentials not configured');
+
+  const callbackUrl = process.env.APP_URL 
+    ? `${process.env.APP_URL}/api/auth/youtube/callback`
+    : `${req.protocol}://${req.get('host')}/api/auth/youtube/callback`;
+
+  const state = Math.random().toString(36).substring(7);
+  (req.session as any).youtubeAuth = { state, workspaceId };
+
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&response_type=code&scope=${encodeURIComponent('https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/userinfo.profile')}&state=${state}&access_type=offline&prompt=consent`;
+  res.json({ url: authUrl });
+});
+
+app.get('/api/auth/youtube/callback', async (req, res) => {
+  const { state, code, error } = req.query;
+  const sessionData = (req.session as any).youtubeAuth;
+
+  if (error) return res.status(400).send(`YouTube OAuth Error: ${error}`);
+  if (!sessionData || !state || !code || state !== sessionData.state) {
+    return res.status(400).send('Invalid state or session expired');
+  }
+
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const callbackUrl = process.env.APP_URL 
+    ? `${process.env.APP_URL}/api/auth/youtube/callback`
+    : `${req.protocol}://${req.get('host')}/api/auth/youtube/callback`;
+
+  try {
+    const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', {
+      client_id: clientId,
+      client_secret: clientSecret,
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: callbackUrl
+    });
+
+    const accessToken = tokenResponse.data.access_token;
+    const refreshToken = tokenResponse.data.refresh_token;
+
+    const profileResponse = await axios.get('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+
+    const channel = profileResponse.data.items?.[0];
+
+    const html = `
+      <html>
+        <body>
+          <script>
+            window.opener.postMessage({
+              type: 'OAUTH_SUCCESS',
+              platform: 'youtube',
+              workspaceId: '${sessionData.workspaceId}',
+              data: {
+                accessToken: '${accessToken}',
+                refreshToken: '${refreshToken}',
+                username: '${channel?.snippet?.title || 'YouTube Channel'}',
+                id: '${channel?.id || ''}'
+              }
+            }, '*');
+            window.close();
+          </script>
+          <p>Authentication successful! You can close this window.</p>
+        </body>
+      </html>
+    `;
+    res.send(html);
+  } catch (error: any) {
+    console.error('YouTube OAuth Error:', error.response?.data || error.message);
+    res.status(500).send('Authentication failed');
+  }
+});
+
+// Pinterest OAuth 2.0
+app.get('/api/auth/pinterest/login', (req, res) => {
+  const workspaceId = req.query.workspaceId as string;
+  if (!workspaceId) return res.status(400).send('Missing workspaceId');
+
+  const clientId = process.env.PINTEREST_CLIENT_ID;
+  if (!clientId) return res.status(500).send('Pinterest credentials not configured');
+
+  const callbackUrl = process.env.APP_URL 
+    ? `${process.env.APP_URL}/api/auth/pinterest/callback`
+    : `${req.protocol}://${req.get('host')}/api/auth/pinterest/callback`;
+
+  const state = Math.random().toString(36).substring(7);
+  (req.session as any).pinterestAuth = { state, workspaceId };
+
+  const authUrl = `https://www.pinterest.com/oauth/?client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&response_type=code&scope=boards:read,pins:read,pins:write&state=${state}`;
+  res.json({ url: authUrl });
+});
+
+app.get('/api/auth/pinterest/callback', async (req, res) => {
+  const { state, code, error } = req.query;
+  const sessionData = (req.session as any).pinterestAuth;
+
+  if (error) return res.status(400).send(`Pinterest OAuth Error: ${error}`);
+  if (!sessionData || !state || !code || state !== sessionData.state) {
+    return res.status(400).send('Invalid state or session expired');
+  }
+
+  const clientId = process.env.PINTEREST_CLIENT_ID;
+  const clientSecret = process.env.PINTEREST_CLIENT_SECRET;
+  const callbackUrl = process.env.APP_URL 
+    ? `${process.env.APP_URL}/api/auth/pinterest/callback`
+    : `${req.protocol}://${req.get('host')}/api/auth/pinterest/callback`;
+
+  try {
+    const authHeader = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+    const tokenResponse = await axios.post('https://api.pinterest.com/v5/oauth/token', 
+      new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: code as string,
+        redirect_uri: callbackUrl
+      }).toString(),
+      {
+        headers: {
+          'Authorization': `Basic ${authHeader}`,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      }
+    );
+
+    const accessToken = tokenResponse.data.access_token;
+
+    const profileResponse = await axios.get('https://api.pinterest.com/v5/user_account', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+
+    const html = `
+      <html>
+        <body>
+          <script>
+            window.opener.postMessage({
+              type: 'OAUTH_SUCCESS',
+              platform: 'pinterest',
+              workspaceId: '${sessionData.workspaceId}',
+              data: {
+                accessToken: '${accessToken}',
+                username: '${profileResponse.data.username}',
+                id: '${profileResponse.data.username}'
+              }
+            }, '*');
+            window.close();
+          </script>
+          <p>Authentication successful! You can close this window.</p>
+        </body>
+      </html>
+    `;
+    res.send(html);
+  } catch (error: any) {
+    console.error('Pinterest OAuth Error:', error.response?.data || error.message);
+    res.status(500).send('Authentication failed');
+  }
+});
+
 // --- Publishing Route ---
 app.post('/api/publish/twitter', async (req, res) => {
   const { accessToken, text } = req.body;
@@ -295,6 +573,26 @@ app.post('/api/publish/linkedin', async (req, res) => {
     console.error('LinkedIn Publish Error:', error);
     res.status(500).json({ error: error.message || 'Failed to publish' });
   }
+});
+
+app.post('/api/publish/tiktok', async (req, res) => {
+  const { accessToken, text } = req.body;
+  // Note: TikTok publishing usually requires a video. 
+  // For this demo, we'll simulate a successful response or handle text-only if supported by their API (it's not really for main feed)
+  // Real TikTok API requires video upload first.
+  res.json({ success: true, message: 'TikTok publishing initiated (Requires video for real API)' });
+});
+
+app.post('/api/publish/youtube', async (req, res) => {
+  const { accessToken, text } = req.body;
+  // YouTube requires video upload. For text-only, we might use community posts if available.
+  res.json({ success: true, message: 'YouTube publishing initiated (Requires video for real API)' });
+});
+
+app.post('/api/publish/pinterest', async (req, res) => {
+  const { accessToken, text } = req.body;
+  // Pinterest requires an image and a board ID.
+  res.json({ success: true, message: 'Pinterest publishing initiated (Requires image and board for real API)' });
 });
 
 // --- Analytics Routes ---

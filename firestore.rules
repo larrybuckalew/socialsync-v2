@@ -171,10 +171,20 @@ service cloud.firestore {
     }
 
     function isValidMediaAsset() {
-      return hasOnlyAllowedFields(['workspaceId', 'url', 'name', 'createdAt']) &&
+      return hasOnlyAllowedFields(['workspaceId', 'url', 'name', 'createdAt', 'tags']) &&
              request.resource.data.workspaceId is string &&
              request.resource.data.url is string && request.resource.data.url.size() <= 2000 &&
              request.resource.data.name is string && request.resource.data.name.size() <= 200 &&
+             (!('tags' in request.resource.data) || request.resource.data.tags is list) &&
+             request.resource.data.createdAt is string;
+    }
+
+    function isValidCompetitor() {
+      return hasOnlyAllowedFields(['workspaceId', 'handle', 'platform', 'metrics', 'createdAt']) &&
+             request.resource.data.workspaceId is string &&
+             request.resource.data.handle is string && request.resource.data.handle.size() <= 100 &&
+             request.resource.data.platform is string && request.resource.data.platform.size() <= 50 &&
+             request.resource.data.metrics is map &&
              request.resource.data.createdAt is string;
     }
 
@@ -239,6 +249,16 @@ service cloud.firestore {
     match /mediaAssets/{assetId} {
       allow read: if isAuthenticated() && isWorkspaceViewer(resource.data.workspaceId);
       allow create: if isAuthenticated() && isValidMediaAsset() && isWorkspaceEditor(request.resource.data.workspaceId);
+      allow update: if isAuthenticated() && isWorkspaceEditor(resource.data.workspaceId) &&
+                       isValidMediaAsset() &&
+                       request.resource.data.workspaceId == resource.data.workspaceId &&
+                       request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isAuthenticated() && isWorkspaceEditor(resource.data.workspaceId);
+    }
+
+    match /competitors/{competitorId} {
+      allow read: if isAuthenticated() && isWorkspaceViewer(resource.data.workspaceId);
+      allow create: if isAuthenticated() && isValidCompetitor() && isWorkspaceEditor(request.resource.data.workspaceId);
       allow delete: if isAuthenticated() && isWorkspaceEditor(resource.data.workspaceId);
     }
 

@@ -3,6 +3,23 @@ import { Calendar as BigCalendar, momentLocalizer } from 'react-big-calendar';
 import moment from 'moment';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
 import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip as RechartsTooltip, 
+  ResponsiveContainer, 
+  LineChart, 
+  Line, 
+  AreaChart, 
+  Area,
+  PieChart,
+  Pie,
+  Cell,
+  Legend
+} from 'recharts';
+import { 
   LayoutDashboard, 
   Calendar, 
   Share2, 
@@ -38,53 +55,31 @@ import {
   ThumbsUp,
   Hash,
   Moon,
-  Sun
+  Sun,
+  Edit3,
+  User as UserIcon,
+  Users,
+  Zap,
+  Search
 } from 'lucide-react';
 import { Skeleton } from './components/Skeleton';
 import { EmptyState } from './components/EmptyState';
 
 const localizer = momentLocalizer(moment);
 import { GoogleGenAI } from '@google/genai';
-// Simple API auth - replaces Firebase
-interface SimpleUser { uid: string; email: string | null; displayName: string | null; }
+import OpenAI from 'openai';
 
-async function apiGet(path: string) {
-  const r = await fetch(path, { credentials: 'include' });
-  if (!r.ok) throw new Error('API error');
-  return r.json();
-}
-async function apiPost(path: string, body: any) {
-  const r = await fetch(path, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body), credentials: 'include' });
-  return r.json();
-}
-async function apiPatch(path: string, body: any) {
-  const r = await fetch(path, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body), credentials: 'include' });
-  return r.json();
-}
-async function apiDel(path: string) {
-  const r = await fetch(path, { method: 'DELETE', credentials: 'include' });
-  return r.json();
-}
+const AI_TEMPLATES = [
+  { id: 'promo', name: 'Promotional Tweet', prompt: 'Write a short, engaging promotional tweet for a new product launch. Include a call to action and relevant hashtags.' },
+  { id: 'news', name: 'Industry News', prompt: 'Write a LinkedIn post summarizing a recent industry news trend. Keep it professional, insightful, and encourage discussion.' },
+  { id: 'insta', name: 'Instagram Caption', prompt: 'Write a catchy Instagram caption for a product photo. Include emojis and a question to boost engagement.' },
+  { id: 'blog', name: 'Blog Teaser', prompt: 'Write a short, intriguing teaser for a blog post. Include a call to action.' },
+];
 
-// Mock Firestore-style helpers
-async function getDocs(path: string) {
-  const data = await apiGet(path);
-  return { docs: data.workspaces ? data.workspaces.map((w: any) => ({ id: w.id, data: () => w })) : data.posts ? data.posts.map((p: any) => ({ id: p.id, data: () => p })) : data.notifications ? data.notifications.map((n: any) => ({ id: n.id, data: () => n })) : [] };
-}
-async function addDoc(path: string, data: any) {
-  const result = await apiPost(path, data);
-  return { id: result.id };
-}
-async function updateDoc(path: string, data: any) {
-  await apiPatch(path, data);
-}
-async function deleteDoc(path: string) {
-  await apiDel(path);
-}
-function doc(db: any, col: string, id: string) { return `/${col}/${id}`; }
-function collection(db: any, name: string) { return `/${name}`; }
-const handleFirestoreError = (e: any) => console.error(e);
-const OperationType = { CREATE: 'create', UPDATE: 'update', DELETE: 'delete', LIST: 'list', GET: 'get', WRITE: 'write' };
+import { db, auth, storage, signInWithGoogle, logOut, handleFirestoreError, OperationType } from './firebase';
+import { collection, query, where, onSnapshot, addDoc, updateDoc, doc, getDocs, setDoc, deleteDoc } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { onAuthStateChanged, User } from 'firebase/auth';
 
 type Platform = 'twitter' | 'facebook' | 'instagram' | 'tiktok' | 'pinterest' | 'linkedin' | 'youtube' | 'reddit' | 'telegram' | 'wordpress' | 'ghl';
 
@@ -101,6 +96,7 @@ interface MediaAsset {
   url: string;
   name: string;
   createdAt: string;
+  tags?: string[];
 }
 
 interface PostMediaAsset {
@@ -142,15 +138,35 @@ interface Notification {
   createdAt: string;
 }
 
-const MediaLibrary = ({ workspaceId }: { workspaceId: string }) => {
+interface AnalyticsData {
+  platform: string;
+  likes: number;
+  shares: number;
+  comments: number;
+  date: string;
+}
+
+const Tooltip = ({ children, text }: { children: React.ReactNode, text: string }) => {
+  return (
+    <div className="group relative flex items-center">
+      {children}
+      <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 px-2 py-1 bg-gray-900 text-white text-[10px] rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-xl">
+        {text}
+        <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
+      </div>
+    </div>
+  );
+};
+
+const MediaLibrary = ({ workspaceId, onSelectAsset, isModal = false }: { workspaceId: string, onSelectAsset?: (asset: MediaAsset) => void, isModal?: boolean }) => {
   const [assets, setAssets] = useState<MediaAsset[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterDate, setFilterDate] = useState('all');
 
   useEffect(() => {
     const q = query(collection(db, 'mediaAssets'), where('workspaceId', '==', workspaceId));
-    const unsubscribe = // onSnapshot replaced with fetch
-    // Real implementation would need polling or websockets
-    apiGet(q as string).then((data: any) => {
+    const unsubscribe = onSnapshot(q, (snapshot) => {
       setAssets(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as MediaAsset)));
     });
     return unsubscribe;
@@ -196,7 +212,8 @@ const MediaLibrary = ({ workspaceId }: { workspaceId: string }) => {
           workspaceId,
           url,
           name: optimizedFile.name,
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          tags: []
         });
       }
     } catch (error) {
@@ -206,27 +223,135 @@ const MediaLibrary = ({ workspaceId }: { workspaceId: string }) => {
     }
   };
 
+  const filteredAssets = assets.filter(asset => {
+    const matchesSearch = asset.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                          (asset.tags && asset.tags.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase())));
+    
+    let matchesDate = true;
+    if (filterDate !== 'all') {
+      const assetDate = new Date(asset.createdAt);
+      const now = new Date();
+      if (filterDate === 'today') {
+        matchesDate = assetDate.toDateString() === now.toDateString();
+      } else if (filterDate === 'week') {
+        const weekAgo = new Date(now.setDate(now.getDate() - 7));
+        matchesDate = assetDate >= weekAgo;
+      } else if (filterDate === 'month') {
+        const monthAgo = new Date(now.setMonth(now.getMonth() - 1));
+        matchesDate = assetDate >= monthAgo;
+      }
+    }
+    
+    return matchesSearch && matchesDate;
+  });
+
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-display font-semibold text-gray-800">Media Library</h2>
-        <label className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium cursor-pointer transition-colors flex items-center">
-          {isUploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}
-          Upload Media
-          <input type="file" multiple onChange={handleUpload} className="hidden" accept="image/*,video/*" />
-        </label>
+    <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+        <h2 className="text-xl font-display font-semibold text-gray-800 dark:text-gray-100">Media Library</h2>
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input 
+              type="text" 
+              placeholder="Search by name or tag..." 
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9 pr-4 py-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none w-full sm:w-64"
+            />
+          </div>
+          <select
+            value={filterDate}
+            onChange={(e) => setFilterDate(e.target.value)}
+            className="border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+          >
+            <option value="all">All Time</option>
+            <option value="today">Today</option>
+            <option value="week">Past Week</option>
+            <option value="month">Past Month</option>
+          </select>
+          <label className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium cursor-pointer transition-colors flex items-center whitespace-nowrap">
+            {isUploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}
+            Upload
+            <input type="file" multiple onChange={handleUpload} className="hidden" accept="image/*,video/*" />
+          </label>
+        </div>
       </div>
-      {assets.length === 0 ? (
-        <div className="text-center py-12 border border-dashed border-gray-200 rounded-xl">
-          <Library className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-          <p className="text-gray-500 font-medium">No media assets yet. Upload some to get started!</p>
+      {filteredAssets.length === 0 ? (
+        <div className="text-center py-12 border border-dashed border-gray-200 dark:border-gray-700 rounded-xl">
+          <Library className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+          <p className="text-gray-500 dark:text-gray-400 font-medium">No media assets found.</p>
         </div>
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-          {assets.map(asset => (
-            <div key={asset.id} className="border border-gray-200 rounded-lg overflow-hidden group">
+          {filteredAssets.map(asset => (
+            <div key={asset.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden group relative bg-gray-50 dark:bg-gray-900">
               <img src={asset.url} alt={asset.name} className="w-full h-32 object-cover" />
-              <div className="p-2 text-xs text-gray-600 truncate">{asset.name}</div>
+              <div className="p-2 text-xs text-gray-600 dark:text-gray-400 truncate">{asset.name}</div>
+              {asset.tags && asset.tags.length > 0 && (
+                <div className="absolute top-2 left-2 flex gap-1 flex-wrap z-10">
+                  {asset.tags.map(tag => (
+                    <span 
+                      key={tag} 
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        if (window.confirm(`Remove tag "${tag}"?`)) {
+                          try {
+                            const newTags = asset.tags!.filter(t => t !== tag);
+                            await updateDoc(doc(db, 'mediaAssets', asset.id), { tags: newTags });
+                          } catch (error) {
+                            console.error("Failed to remove tag:", error);
+                          }
+                        }
+                      }}
+                      className="bg-black/70 hover:bg-red-600/90 text-white text-[10px] px-1.5 py-0.5 rounded backdrop-blur-sm cursor-pointer transition-colors"
+                      title="Click to remove tag"
+                    >
+                      {tag} &times;
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center p-4">
+                {onSelectAsset && (
+                  <button
+                    onClick={() => onSelectAsset(asset)}
+                    className="bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors w-full mb-2"
+                  >
+                    Use in Post
+                  </button>
+                )}
+                <button
+                  onClick={async () => {
+                    const tag = window.prompt('Enter a tag for this asset:');
+                    if (tag && tag.trim()) {
+                      try {
+                        const newTags = [...(asset.tags || []), tag.trim()];
+                        await updateDoc(doc(db, 'mediaAssets', asset.id), { tags: newTags });
+                      } catch (error) {
+                        console.error("Failed to add tag:", error);
+                      }
+                    }
+                  }}
+                  className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors w-full mb-2"
+                >
+                  Add Tag
+                </button>
+                <button
+                  onClick={async () => {
+                    if (window.confirm('Are you sure you want to delete this asset?')) {
+                      try {
+                        await deleteDoc(doc(db, 'mediaAssets', asset.id));
+                      } catch (error) {
+                        console.error("Failed to delete asset:", error);
+                      }
+                    }
+                  }}
+                  className="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-700 transition-colors w-full"
+                >
+                  Delete
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -257,13 +382,27 @@ export default function App() {
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [isReel, setIsReel] = useState(false);
   const [replyingToCommentId, setReplyingToCommentId] = useState<string | null>(null);
+  const [replySuggestions, setReplySuggestions] = useState<Record<string, string[]>>({});
+  const [competitors, setCompetitors] = useState<any[]>([]);
+  const [isAddingCompetitor, setIsAddingCompetitor] = useState(false);
+  const [newCompetitorHandle, setNewCompetitorHandle] = useState('');
+  const [newCompetitorPlatform, setNewCompetitorPlatform] = useState<Platform>('twitter');
   
   // Repurpose & Media Library State
   const [composerMode, setComposerMode] = useState<'write' | 'repurpose'>('write');
   const [repurposeSource, setRepurposeSource] = useState('');
   const [isRepurposing, setIsRepurposing] = useState(false);
   const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
+  const [isTemplatesDropdownOpen, setIsTemplatesDropdownOpen] = useState(false);
   const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>([]);
+
+  const AI_TEMPLATES = [
+    { id: 'promo-tweet', name: 'Promotional Tweet', prompt: 'Generate a promotional tweet for a new product launch.' },
+    { id: 'linkedin-news', name: 'LinkedIn Industry News', prompt: 'Write a professional LinkedIn post about recent industry news and its impact.' },
+    { id: 'insta-product', name: 'Instagram Product Caption', prompt: 'Create an engaging Instagram caption for a product showcase, including emojis.' },
+    { id: 'facebook-event', name: 'Facebook Event Announcement', prompt: 'Write a friendly Facebook post announcing an upcoming community event.' },
+    { id: 'tiktok-hook', name: 'TikTok Video Hook', prompt: 'Generate 3 catchy hooks for a TikTok video about my brand.' },
+  ];
 
   // Workspace State
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -275,8 +414,14 @@ export default function App() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // App State
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'engagement' | 'accounts' | 'calendar' | 'media'>('dashboard');
-  const [dashboardTab, setDashboardTab] = useState<'scheduled' | 'published' | 'drafts' | 'calendar'>('scheduled');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'engagement' | 'accounts' | 'calendar' | 'media' | 'analytics'>('dashboard');
+  const [engagementTab, setEngagementTab] = useState<'inbox' | 'listening'>('inbox');
+  const [monitoredKeywords, setMonitoredKeywords] = useState<string[]>([]);
+  const [mentions, setMentions] = useState<any[]>([]);
+  const [isFetchingMentions, setIsFetchingMentions] = useState(false);
+  const [analyticsData, setAnalyticsData] = useState<AnalyticsData[]>([]);
+  const [isFetchingAnalytics, setIsFetchingAnalytics] = useState(false);
+  const [dashboardTab, setDashboardTab] = useState<'scheduled' | 'published' | 'drafts' | 'calendar' | 'pending_approval'>('scheduled');
   const [posts, setPosts] = useState<ScheduledPost[]>([]);
   const [isLoadingPosts, setIsLoadingPosts] = useState(true);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -285,13 +430,20 @@ export default function App() {
   // Automation Settings State
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
   const [aiPersona, setAiPersona] = useState('');
+  const [brandPersonality, setBrandPersonality] = useState('');
+  const [brandValues, setBrandValues] = useState('');
+  const [brandTargetAudience, setBrandTargetAudience] = useState('');
   const [ghlApiKey, setGhlApiKey] = useState('');
   const [ghlLocationId, setGhlLocationId] = useState('');
+  const [imageGenApiKey, setImageGenApiKey] = useState('');
   const [connectedPlatforms, setConnectedPlatforms] = useState<Platform[]>([]);
   const [oauthConnections, setOauthConnections] = useState<Record<string, any>>({});
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [userRole, setUserRole] = useState<'admin' | 'editor' | 'viewer' | null>(null);
-  const [darkMode, setDarkMode] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => {
+    const saved = localStorage.getItem('darkMode');
+    return saved ? JSON.parse(saved) : false;
+  });
   const [selectedPostIds, setSelectedPostIds] = useState<string[]>([]);
 
   const togglePostSelection = (postId: string) => {
@@ -303,9 +455,9 @@ export default function App() {
   const handleBulkAction = async (action: 'delete' | 'publish' | 'draft') => {
     for (const postId of selectedPostIds) {
       if (action === 'delete') {
-        await deleteDoc('/posts/' + postId);
+        await deleteDoc(doc(db, 'posts', postId));
       } else {
-        await updateDoc('/posts/' + postId, { status: action === 'publish' ? 'published' : 'draft' });
+        await updateDoc(doc(db, 'posts', postId), { status: action === 'publish' ? 'published' : 'draft' });
       }
     }
     setSelectedPostIds([]);
@@ -326,6 +478,17 @@ export default function App() {
   };
 
   useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (isTemplatesDropdownOpen && !(event.target as Element).closest('.relative')) {
+        setIsTemplatesDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isTemplatesDropdownOpen]);
+
+  useEffect(() => {
+    localStorage.setItem('darkMode', JSON.stringify(darkMode));
     if (darkMode) {
       document.documentElement.classList.add('dark');
     } else {
@@ -334,60 +497,36 @@ export default function App() {
   }, [darkMode]);
 
   useEffect(() => {
-    if (!user) return;
-    const q = query(collection(db, 'notifications'), where('userId', '==', user.uid));
-    const unsubscribe = // onSnapshot replaced with fetch
-    // Real implementation would need polling or websockets
-    apiGet(q as string).then((data: any) => {
-      setNotifications((data.notifications || []).map((n: any) => ({ id: n.id, ...n } as Notification)));
+    if (!auth.currentUser) return;
+    const q = query(collection(db, 'notifications'), where('userId', '==', auth.currentUser.uid));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setNotifications(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification)));
     });
     return () => unsubscribe();
-  }, [user]);
+  }, [auth.currentUser]);
 
   useEffect(() => {
-    if (!activeWorkspace || !user) {
+    if (!activeWorkspace || !auth.currentUser) {
       setUserRole(null);
       return;
     }
-    const unsubscribe = onSnapshot('/workspaces/' + activeWorkspace, (doc) => {
+    const unsubscribe = onSnapshot(doc(db, 'workspaces', activeWorkspace), (doc) => {
       const data = doc.data();
       if (data && data.members) {
-        setUserRole(data.members[user?.uid] || null);
+        setUserRole(data.members[auth.currentUser!.uid] || null);
       } else {
         setUserRole(null);
       }
     });
     return () => unsubscribe();
-  }, [activeWorkspace, user]);
+  }, [activeWorkspace, auth.currentUser]);
 
   const [isSavingPersona, setIsSavingPersona] = useState(false);
   const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
 
   // Auth State
-  const [user, setUser] = useState<SimpleUser | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [showLoginForm, setShowLoginForm] = useState(false);
-  const [loginUsername, setLoginUsername] = useState('admin');
-  const [loginPassword, setLoginPassword] = useState('socialsync2026');
-  const [loginError, setLoginError] = useState('');
-
-  const handleSimpleLogin = async () => {
-    setLoginError('');
-    try {
-      const result = await apiPost('/api/login', { username: loginUsername, password: loginPassword });
-      if (result.success) {
-        setUser({ uid: 'local-user', email: loginUsername, displayName: loginUsername });
-        setShowLoginForm(false);
-      } else {
-        setLoginError(result.error || 'Login failed');
-      }
-    } catch { setLoginError('Connection error'); }
-  };
-
-  const handleSimpleLogout = async () => {
-    await apiPost('/api/logout', {});
-    setUser(null);
-  };
 
   // Settings State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -396,13 +535,89 @@ export default function App() {
   const [ollamaModel, setOllamaModel] = useState('llama3');
   const [openRouterApiKey, setOpenRouterApiKey] = useState('');
   const [openRouterModel, setOpenRouterModel] = useState('meta-llama/llama-3-8b-instruct:free');
-  const [groqApiKey, setGroqApiKey] = useState('');
+  const [groqApiKey, setGroqApiKey] = useState('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');
   const [groqModel, setGroqModel] = useState('llama3-8b-8192');
+
+  // AI Calendar Generator State
+  const [isCalendarGeneratorOpen, setIsCalendarGeneratorOpen] = useState(false);
+  const [calendarGenPostsPerDay, setCalendarGenPostsPerDay] = useState(1);
+  const [calendarGenPlatforms, setCalendarGenPlatforms] = useState<Platform[]>(['twitter']);
+  const [isGeneratingCalendar, setIsGeneratingCalendar] = useState(false);
+  const [generatedCalendarPreview, setGeneratedCalendarPreview] = useState<any[]>([]);
   const [n8nWebhookUrl, setN8nWebhookUrl] = useState('https://n8n.aisetuppros.com/webhook/social-sync');
+  const [trendAlerts, setTrendAlerts] = useState<string[]>([]);
   const [generatedApiKey, setGeneratedApiKey] = useState<string | null>(null);
   const [isGeneratingApiKey, setIsGeneratingApiKey] = useState(false);
   const [isImproving, setIsImproving] = useState(false);
   const [toasts, setToasts] = useState<{ id: string; message: string; type: 'success' | 'error' | 'info' }[]>([]);
+  const [postIdeas, setPostIdeas] = useState<{ title: string; description: string }[]>([]);
+  const [isGeneratingIdeas, setIsGeneratingIdeas] = useState(false);
+  const [suggestedTime, setSuggestedTime] = useState<string | null>(null);
+  const [suggestedTimeReason, setSuggestedTimeReason] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (selectedPlatforms.length > 0) {
+      const bestTime = getSmartBestTime(selectedPlatforms[0]);
+      setSuggestedTime(bestTime);
+      
+      let reason = `Based on your historical engagement for ${selectedPlatforms[0]}`;
+      if (trendAlerts.length > 0) {
+        reason += ` and current trends (${trendAlerts[0]})`;
+      }
+      setSuggestedTimeReason(reason);
+    } else {
+      setSuggestedTime(null);
+      setSuggestedTimeReason(null);
+    }
+  }, [selectedPlatforms, posts, trendAlerts]);
+
+  useEffect(() => {
+    const checkTrends = async () => {
+      try {
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
+        const response = await ai.models.generateContent({
+          model: 'gemini-3-flash-preview',
+          contents: 'List 3 current trending social media hashtags related to tech and marketing as a JSON array of strings. [ignoring loop detection]',
+          config: {
+            responseMimeType: "application/json",
+          }
+        });
+        const responseText = response.text || "[]";
+        const cleanedText = responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
+        const newTrends = JSON.parse(cleanedText);
+        
+        const unseenTrends = newTrends.filter((t: string) => !trendAlerts.includes(t));
+        if (unseenTrends.length > 0) {
+          setTrendAlerts(prev => [...prev, ...unseenTrends]);
+          unseenTrends.forEach((trend: string) => {
+            showToast(`New trend detected: ${trend}`, 'info');
+            if (auth.currentUser) {
+              addDoc(collection(db, 'notifications'), {
+                userId: auth.currentUser.uid,
+                message: `New trend detected: ${trend}. Capitalize on it!`,
+                read: false,
+                createdAt: new Date().toISOString()
+              }).catch(e => console.error("Failed to add notification", e));
+            }
+          });
+        }
+      } catch (error: any) {
+        if (error?.status === 429 || error?.message?.includes('429') || error?.message?.includes('RESOURCE_EXHAUSTED')) {
+          console.warn('Trend detection rate limited. Will try again later.');
+        } else {
+          console.error('Trend detection failed:', error);
+        }
+      }
+    };
+    
+    // Initial check
+    if (trendAlerts.length === 0) {
+      checkTrends();
+    }
+    
+    const interval = setInterval(checkTrends, 900000); // Check every 15 minutes to avoid rate limits
+    return () => clearInterval(interval);
+  }, [trendAlerts]);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = Math.random().toString(36).substring(2, 9);
@@ -415,7 +630,7 @@ export default function App() {
   const handleCreateWorkspace = async () => {
     if (!newWorkspaceName.trim() || !user) return;
     try {
-      const newWsRef = await addDoc('/api/workspaces', {
+      const newWsRef = await addDoc(collection(db, 'workspaces'), {
         name: newWorkspaceName.trim(),
         ownerId: user.uid,
         createdAt: new Date().toISOString()
@@ -492,7 +707,7 @@ export default function App() {
       
       // Notify the owner of the post
       await addDoc(collection(db, 'notifications'), {
-        userId: user?.uid, // This should be the owner, but for now using current user
+        userId: auth.currentUser?.uid, // This should be the owner, but for now using current user
         message: `Post status changed to ${newStatus}`,
         read: false,
         createdAt: new Date().toISOString()
@@ -545,7 +760,7 @@ export default function App() {
 
   const handleMarkAsPublished = async (postId: string) => {
     try {
-      await updateDoc('/posts/' + postId, { status: 'published' });
+      await updateDoc(doc(db, 'posts', postId), { status: 'published' });
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `posts/${postId}`);
     }
@@ -571,6 +786,15 @@ export default function App() {
       
       if (postTone && postTone !== 'Default') {
         prompt += ` Write the post using a ${postTone} tone of voice.`;
+      }
+
+      // Inject Brand Kit context
+      if (brandPersonality || brandValues || brandTargetAudience) {
+        prompt += "\n\nBrand Context:";
+        if (brandPersonality) prompt += `\n- Brand Personality: ${brandPersonality}`;
+        if (brandValues) prompt += `\n- Core Values: ${brandValues}`;
+        if (brandTargetAudience) prompt += `\n- Target Audience: ${brandTargetAudience}`;
+        prompt += "\nPlease ensure the content strictly adheres to this brand identity.";
       }
       
       if (selectedPlatforms.length > 0) {
@@ -702,6 +926,9 @@ Content:
     try {
       const prompt = `You are an expert social media manager. 
 ${aiPersona ? `Here is your persona/instructions: ${aiPersona}` : 'Be helpful, friendly, and concise.'}
+${brandPersonality ? `Brand Personality: ${brandPersonality}` : ''}
+${brandValues ? `Core Values: ${brandValues}` : ''}
+${brandTargetAudience ? `Target Audience: ${brandTargetAudience}` : ''}
 
 Please ${action} the following social media post content. 
 Keep the original meaning but make it ${action === 'rephrase' ? 'more engaging and fresh' : action === 'shorten' ? 'more concise and punchy' : 'more detailed and informative'}.
@@ -797,37 +1024,57 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
       showToast('Please enter an image prompt.', 'error');
       return;
     }
+    if (!imageGenApiKey) {
+      showToast('Please configure your Image Generation API Key in settings.', 'error');
+      return;
+    }
     setIsGeneratingImage(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
-        contents: {
-          parts: [
-            {
-              text: imagePrompt,
-            },
-          ],
-        },
+      const openai = new OpenAI({ apiKey: imageGenApiKey, dangerouslyAllowBrowser: true });
+      const response = await openai.images.generate({
+        model: "dall-e-3",
+        prompt: imagePrompt,
+        n: 1,
+        size: "1024x1024",
       });
       
-      let newImageUrl = '';
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          const base64EncodeString = part.inlineData.data;
-          newImageUrl = `data:image/png;base64,${base64EncodeString}`;
-          break;
-        }
-      }
-      
-      if (newImageUrl) {
-        setGeneratedImagePreview(newImageUrl);
+      const imageUrl = response.data[0].url;
+      if (imageUrl) {
+        setGeneratedImagePreview(imageUrl);
+        showToast('Image generated successfully!', 'success');
       } else {
-        showToast('Failed to generate image.', 'error');
+        throw new Error('No image URL returned');
       }
     } catch (error) {
-      console.error("Error generating image:", error);
-      showToast('Error generating image.', 'error');
+      console.error('Image generation failed:', error);
+      showToast('Failed to generate image. Please check your API key.', 'error');
+    } finally {
+      setIsGeneratingImage(false);
+    }
+  };
+
+  const handleGenerateImageFree = async () => {
+    if (!imagePrompt) {
+      showToast('Please enter an image prompt.', 'error');
+      return;
+    }
+    setIsGeneratingImage(true);
+    try {
+      const seed = Math.floor(Math.random() * 1000000);
+      const imageUrl = `https://pollinations.ai/p/${encodeURIComponent(imagePrompt)}?width=1024&height=1024&seed=${seed}&nologo=true`;
+      
+      // We can't easily verify if the image exists since it's a direct URL, 
+      // but we can try to fetch it to see if it's reachable
+      const response = await fetch(imageUrl);
+      if (response.ok) {
+        setGeneratedImagePreview(imageUrl);
+        showToast('Image generated successfully!', 'success');
+      } else {
+        throw new Error('Failed to reach image generator');
+      }
+    } catch (error) {
+      console.error('Free image generation failed:', error);
+      showToast('Failed to generate image. Please try again.', 'error');
     } finally {
       setIsGeneratingImage(false);
     }
@@ -857,6 +1104,11 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
       Please repurpose it into 3 distinct social media posts tailored for different platforms (e.g., Twitter, LinkedIn, Facebook).
       Source: ${repurposeSource}
       Tone: ${postTone}
+
+      Brand Context:
+      - Personality: ${brandPersonality || 'Professional and engaging'}
+      - Values: ${brandValues || 'Quality and innovation'}
+      - Target Audience: ${brandTargetAudience || 'General social media users'}
       
       Return ONLY a raw JSON array of objects. Each object must have:
       - "content": The text of the post.
@@ -868,12 +1120,12 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
         contents: prompt,
         config: {
           responseMimeType: "application/json",
-          tools: [{ googleSearch: {} }]
         }
       });
 
       const text = response.text || "[]";
-      const generatedPosts = JSON.parse(text);
+      const cleanedText = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+      const generatedPosts = JSON.parse(cleanedText);
       
       for (const gp of generatedPosts) {
         await addDoc(collection(db, 'posts'), {
@@ -921,7 +1173,7 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
     // Fetch workspaces
     const fetchWorkspaces = async () => {
       try {
-        const q = collection(db, 'workspaces');
+        const q = query(collection(db, 'workspaces'), where('ownerId', '==', user.uid));
         const querySnapshot = await getDocs(q);
         const wsData: Workspace[] = [];
         querySnapshot.forEach((doc) => {
@@ -930,7 +1182,7 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
         
         if (wsData.length === 0) {
           // Create default workspace
-          const newWsRef = await addDoc('/api/workspaces', {
+          const newWsRef = await addDoc(collection(db, 'workspaces'), {
             name: 'Personal Brand',
             ownerId: user.uid,
             createdAt: new Date().toISOString()
@@ -957,7 +1209,7 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
     if (!isAuthReady || !user || !activeWorkspace) return;
 
     // Listen to posts
-    const qPosts = collection(db, 'posts');
+    const qPosts = query(collection(db, 'posts'), where('workspaceId', '==', activeWorkspace), where('ownerId', '==', user.uid));
     const unsubPosts = onSnapshot(qPosts, (snapshot) => {
       const postsData: ScheduledPost[] = [];
       snapshot.forEach(doc => {
@@ -1010,6 +1262,10 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
         const data = docSnap.data();
         setAutoReplyEnabled(data.autoReplyEnabled || false);
         setAiPersona(data.aiPersona || '');
+        setBrandPersonality(data.brandPersonality || '');
+        setBrandValues(data.brandValues || '');
+        setBrandTargetAudience(data.brandTargetAudience || '');
+        setMonitoredKeywords(data.monitoredKeywords || []);
         setGhlApiKey(data.ghlApiKey || '');
         setGhlLocationId(data.ghlLocationId || '');
         setConnectedPlatforms(data.connectedPlatforms || []);
@@ -1026,13 +1282,62 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
       handleFirestoreError(error, OperationType.GET, `automationSettings/${activeWorkspace}`);
     });
 
+    // Listen to competitors
+    const qCompetitors = query(collection(db, 'competitors'), where('workspaceId', '==', activeWorkspace));
+    const unsubCompetitors = onSnapshot(qCompetitors, (snapshot) => {
+      const compData: any[] = [];
+      snapshot.forEach(doc => compData.push({ id: doc.id, ...doc.data() }));
+      setCompetitors(compData);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'competitors');
+    });
+
     return () => {
       unsubPosts();
       unsubComments();
       unsubMedia();
       unsubSettings();
+      unsubCompetitors();
     };
   }, [activeWorkspace, user, isAuthReady]);
+
+  // Process analytics data
+  useEffect(() => {
+    if (posts.length === 0) return;
+
+    const publishedPosts = posts.filter(p => p.status === 'published' && p.analytics);
+    const data: AnalyticsData[] = publishedPosts.map(p => ({
+      platform: p.platforms[0] || 'unknown',
+      likes: p.analytics?.likes || 0,
+      shares: p.analytics?.shares || 0,
+      comments: p.analytics?.comments || 0,
+      date: p.scheduledFor ? new Date(p.scheduledFor).toLocaleDateString() : 'N/A'
+    }));
+
+    setAnalyticsData(data);
+  }, [posts]);
+
+  const getHashtagPerformance = () => {
+    const hashtagStats: Record<string, { engagement: number, count: number }> = {};
+    posts.filter(p => p.status === 'published' && p.analytics).forEach(post => {
+      const hashtags: string[] = post.content.match(/#[a-zA-Z0-9_]+/g) || [];
+      const engagement = (post.analytics?.likes || 0) + (post.analytics?.shares || 0) + (post.analytics?.comments || 0);
+      hashtags.forEach(tag => {
+        const lowerTag = tag.toLowerCase();
+        if (!hashtagStats[lowerTag]) hashtagStats[lowerTag] = { engagement: 0, count: 0 };
+        hashtagStats[lowerTag].engagement += engagement;
+        hashtagStats[lowerTag].count += 1;
+      });
+    });
+
+    return Object.entries(hashtagStats)
+      .map(([tag, stats]) => ({
+        tag,
+        avgEngagement: stats.engagement / stats.count,
+        count: stats.count
+      }))
+      .sort((a, b) => b.avgEngagement - a.avgEngagement);
+  };
 
   // Auto-save drafts
   useEffect(() => {
@@ -1043,6 +1348,42 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
     return () => clearTimeout(timer);
   }, [content, postMediaAssets, selectedPlatforms]);
 
+  const handleAddCompetitor = async () => {
+    if (!newCompetitorHandle.trim()) return;
+    
+    try {
+      // Mock metrics for demo purposes
+      const mockMetrics = {
+        followers: Math.floor(Math.random() * 50000) + 10000,
+        avgEngagement: (Math.random() * 5 + 1).toFixed(1),
+        postsPerWeek: Math.floor(Math.random() * 10) + 3
+      };
+
+      await addDoc(collection(db, 'competitors'), {
+        workspaceId: activeWorkspace,
+        handle: newCompetitorHandle,
+        platform: newCompetitorPlatform,
+        metrics: mockMetrics,
+        createdAt: new Date().toISOString()
+      });
+
+      setNewCompetitorHandle('');
+      setIsAddingCompetitor(false);
+      showToast('Competitor added for tracking!', 'success');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'competitors');
+    }
+  };
+
+  const handleRemoveCompetitor = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'competitors', id));
+      showToast('Competitor removed.', 'success');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `competitors/${id}`);
+    }
+  };
+
   const togglePlatform = (platform: Platform) => {
     setSelectedPlatforms(prev => 
       prev.includes(platform) 
@@ -1051,14 +1392,52 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
     );
   };
 
-  const handleSchedule = async (status: 'scheduled' | 'draft' | 'published' = 'scheduled') => {
+  const handleApprovePost = async (postId: string) => {
+    try {
+      await updateDoc(doc(db, 'posts', postId), { status: 'scheduled' });
+      showToast('Post approved and scheduled!', 'success');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `posts/${postId}`);
+    }
+  };
+
+  const getSmartBestTime = (platform?: Platform) => {
+    const relevantPosts = platform 
+      ? posts.filter(p => p.status === 'published' && p.platforms.includes(platform) && p.analytics)
+      : posts.filter(p => p.status === 'published' && p.analytics);
+
+    if (relevantPosts.length === 0) return '12:00';
+
+    const hourlyEngagement: Record<number, { total: number, count: number }> = {};
+    relevantPosts.forEach(post => {
+      const hour = new Date(post.scheduledFor || post.createdAt || '').getHours();
+      const engagement = (post.analytics?.likes || 0) + (post.analytics?.shares || 0) + (post.analytics?.comments || 0);
+      if (!hourlyEngagement[hour]) hourlyEngagement[hour] = { total: 0, count: 0 };
+      hourlyEngagement[hour].total += engagement;
+      hourlyEngagement[hour].count += 1;
+    });
+
+    let bestHour = 12;
+    let maxAvg = -1;
+    Object.entries(hourlyEngagement).forEach(([hour, data]) => {
+      const avg = data.total / data.count;
+      if (avg > maxAvg) {
+        maxAvg = avg;
+        bestHour = parseInt(hour);
+      }
+    });
+
+    return `${String(bestHour).padStart(2, '0')}:00`;
+  };
+
+  const handleSchedule = async (status: 'scheduled' | 'draft' | 'published' | 'pending_approval' = 'scheduled') => {
     if (!content || selectedPlatforms.length === 0) {
       showToast('Please enter content and select at least one platform.', 'error');
       return;
     }
 
-    if (status === 'scheduled' && (!scheduleDate || !scheduleTime)) {
-      showToast('Please select a date and time for scheduling.', 'error');
+    if ((status === 'scheduled' || status === 'pending_approval') && (!scheduleDate || !scheduleTime)) {
+      showToast('Please select a date and time.', 'error');
       return;
     }
 
@@ -1198,6 +1577,10 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
         workspaceId: activeWorkspace,
         autoReplyEnabled,
         aiPersona,
+        brandPersonality,
+        brandValues,
+        brandTargetAudience,
+        monitoredKeywords,
         ghlApiKey,
         ghlLocationId,
         connectedPlatforms,
@@ -1246,8 +1629,11 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
           console.error("Failed to forward reply to n8n", e);
         }
       }
+      
+      showToast('Reply posted successfully!', 'success');
     } catch (error) {
       console.error("Failed to reply to comment:", error);
+      showToast('Failed to post reply.', 'error');
     }
   };
 
@@ -1256,9 +1642,14 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
     try {
       const prompt = `You are an AI assistant managing a social media account. 
 ${aiPersona ? `Here is your persona/instructions: ${aiPersona}` : 'Be helpful, friendly, and concise.'}
+${brandPersonality ? `Brand Personality: ${brandPersonality}` : ''}
+${brandValues ? `Core Values: ${brandValues}` : ''}
+${brandTargetAudience ? `Target Audience: ${brandTargetAudience}` : ''}
 
-Please write a short, engaging reply to the following user comment:
-"${commentText}"`;
+Please write 3 short, engaging reply options to the following user comment:
+"${commentText}"
+
+Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\`json. Just the array.`;
 
       let generatedReply = '';
 
@@ -1331,13 +1722,284 @@ Please write a short, engaging reply to the following user comment:
       }
 
       if (generatedReply) {
-        await handleReplyToComment(commentId, generatedReply);
+        const cleanedText = generatedReply.replace(/```json/gi, '').replace(/```/g, '').trim();
+        const suggestions = JSON.parse(cleanedText);
+        setReplySuggestions(prev => ({ ...prev, [commentId]: suggestions }));
       }
     } catch (error) {
       console.error("Error generating AI reply:", error);
       showToast("Failed to generate AI reply. Check your AI provider settings.", 'error');
     } finally {
       setReplyingToCommentId(null);
+    }
+  };
+
+  const generateAICalendar = async () => {
+    setIsGeneratingCalendar(true);
+    try {
+      const startDate = moment().add(1, 'days').startOf('day');
+      
+      const prompt = `You are a social media manager. Generate a content calendar for the next 7 days starting from ${startDate.format('YYYY-MM-DD')}.
+      Target Platforms: ${calendarGenPlatforms.join(', ')}
+      Posts per day: ${calendarGenPostsPerDay}
+      
+      ${aiPersona ? `Persona: ${aiPersona}` : ''}
+      ${brandPersonality ? `Brand Personality: ${brandPersonality}` : ''}
+      ${brandValues ? `Core Values: ${brandValues}` : ''}
+      ${brandTargetAudience ? `Target Audience: ${brandTargetAudience}` : ''}
+      
+      For each post, provide:
+      1. content (the actual text of the post)
+      2. platforms (a subset of the target platforms as an array)
+      3. scheduledFor (ISO string, e.g., "2026-04-10T10:00:00Z")
+      
+      Return ONLY a JSON array of objects with keys: "content", "platforms", "scheduledFor".
+      Ensure the scheduled times are realistic and distributed throughout the week.
+      Do not include markdown blocks like \`\`\`json. Just the array.`;
+
+      let generatedText = '';
+
+      if (aiProvider === 'gemini') {
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
+        const response = await ai.models.generateContent({
+          model: 'gemini-3-flash-preview',
+          contents: prompt,
+        });
+        if (response.text) generatedText = response.text;
+      } else if (aiProvider === 'ollama') {
+        const response = await fetch(`${ollamaEndpoint.replace(/\/$/, '')}/api/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: ollamaModel,
+            prompt: prompt,
+            stream: false
+          })
+        });
+        if (!response.ok) throw new Error(`Ollama request failed`);
+        const data = await response.json();
+        if (data.response) generatedText = data.response;
+      } else if (aiProvider === 'openrouter') {
+        if (!openRouterApiKey) {
+          showToast("Please enter your OpenRouter API Key in settings.", 'error');
+          setIsGeneratingCalendar(false);
+          return;
+        }
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openRouterApiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': window.location.href,
+          },
+          body: JSON.stringify({
+            model: openRouterModel,
+            messages: [{ role: 'user', content: prompt }]
+          })
+        });
+        if (!response.ok) throw new Error(`OpenRouter request failed`);
+        const data = await response.json();
+        if (data.choices && data.choices[0] && data.choices[0].message) {
+          generatedText = data.choices[0].message.content;
+        }
+      } else if (aiProvider === 'groq') {
+        if (!groqApiKey) {
+          showToast("Please enter your Groq API Key in settings.", 'error');
+          setIsGeneratingCalendar(false);
+          return;
+        }
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${groqApiKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: groqModel,
+            messages: [{ role: 'user', content: prompt }]
+          })
+        });
+        if (!response.ok) throw new Error(`Groq request failed`);
+        const data = await response.json();
+        if (data.choices && data.choices[0] && data.choices[0].message) {
+          generatedText = data.choices[0].message.content;
+        }
+      }
+
+      if (generatedText) {
+        const cleanedText = generatedText.replace(/```json/g, '').replace(/```/g, '').trim();
+        const data = JSON.parse(cleanedText);
+        setGeneratedCalendarPreview(data);
+        showToast(`AI has suggested ${data.length} posts for your calendar!`, 'success');
+      }
+    } catch (error) {
+      console.error("Error generating AI calendar:", error);
+      showToast("Failed to generate AI calendar. Check your settings.", 'error');
+    } finally {
+      setIsGeneratingCalendar(false);
+    }
+  };
+
+  const saveGeneratedCalendar = async () => {
+    if (!activeWorkspace || !auth.currentUser) return;
+    
+    try {
+      for (const post of generatedCalendarPreview) {
+        await addDoc(collection(db, 'posts'), {
+          ...post,
+          workspaceId: activeWorkspace,
+          status: 'draft',
+          createdAt: new Date().toISOString()
+        });
+      }
+      showToast(`Successfully added ${generatedCalendarPreview.length} posts to your drafts!`, 'success');
+      setIsCalendarGeneratorOpen(false);
+      setGeneratedCalendarPreview([]);
+    } catch (error) {
+      console.error('Failed to save calendar:', error);
+      showToast('Failed to save generated posts.', 'error');
+    }
+  };
+
+  const generatePostIdeas = async () => {
+    setIsGeneratingIdeas(true);
+    try {
+      const prompt = `You are an expert social media strategist. Generate 3-5 concise and actionable social media post ideas based on the following brand context and current trends.
+      
+      Brand Personality: ${brandPersonality || 'Professional and engaging'}
+      Core Values: ${brandValues || 'Quality and innovation'}
+      Target Audience: ${brandTargetAudience || 'General social media users'}
+      Monitored Keywords/Topics: ${monitoredKeywords.length > 0 ? monitoredKeywords.join(', ') : 'General industry topics'}
+      Current Trends: ${trendAlerts.join(', ') || 'General industry trends'}
+      
+      Return ONLY a raw JSON array of objects. Each object must have:
+      - "title": A short, catchy title for the idea.
+      - "description": A concise description of the post content and why it works.
+      
+      Do not include markdown blocks like \`\`\`json. Just the array.`;
+
+      let generatedText = '';
+
+      if (aiProvider === 'gemini') {
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
+        const response = await ai.models.generateContent({
+          model: 'gemini-3-flash-preview',
+          contents: prompt,
+        });
+        if (response.text) generatedText = response.text;
+      } else if (aiProvider === 'ollama') {
+        const response = await fetch(`${ollamaEndpoint.replace(/\/$/, '')}/api/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: ollamaModel,
+            prompt: prompt,
+            stream: false
+          })
+        });
+        if (!response.ok) throw new Error(`Ollama request failed`);
+        const data = await response.json();
+        if (data.response) generatedText = data.response;
+      } else if (aiProvider === 'openrouter') {
+        if (!openRouterApiKey) {
+          showToast("Please enter your OpenRouter API Key in settings.", 'error');
+          setIsGeneratingIdeas(false);
+          return;
+        }
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openRouterApiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': window.location.href,
+          },
+          body: JSON.stringify({
+            model: openRouterModel,
+            messages: [{ role: 'user', content: prompt }]
+          })
+        });
+        if (!response.ok) throw new Error(`OpenRouter request failed`);
+        const data = await response.json();
+        if (data.choices && data.choices[0] && data.choices[0].message) {
+          generatedText = data.choices[0].message.content;
+        }
+      } else if (aiProvider === 'groq') {
+        if (!groqApiKey) {
+          showToast("Please enter your Groq API Key in settings.", 'error');
+          setIsGeneratingIdeas(false);
+          return;
+        }
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${groqApiKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: groqModel,
+            messages: [{ role: 'user', content: prompt }]
+          })
+        });
+        if (!response.ok) throw new Error(`Groq request failed`);
+        const data = await response.json();
+        if (data.choices && data.choices[0] && data.choices[0].message) {
+          generatedText = data.choices[0].message.content;
+        }
+      }
+
+      if (generatedText) {
+        const cleanedText = generatedText.replace(/```json/g, '').replace(/```/g, '').trim();
+        const data = JSON.parse(cleanedText);
+        setPostIdeas(data);
+        showToast("Successfully generated post ideas!", 'success');
+      }
+    } catch (error) {
+      console.error("Error generating post ideas:", error);
+      showToast("Failed to generate post ideas.", 'error');
+    } finally {
+      setIsGeneratingIdeas(false);
+    }
+  };
+
+
+  const fetchMentions = async () => {
+    if (monitoredKeywords.length === 0) return;
+    setIsFetchingMentions(true);
+    try {
+      const prompt = `You are a social listening tool. Based on the following monitored keywords, generate 5 realistic social media "mentions" (posts from other users) that talk about these topics.
+      Keywords: ${monitoredKeywords.join(', ')}
+
+      Return ONLY a raw JSON array of objects. Each object must have:
+      - "author": A realistic username (without @).
+      - "text": The content of the post mentioning one or more keywords.
+      - "platform": One of: "twitter", "reddit", "web".
+      - "sentiment": One of: "positive", "negative", "neutral".
+      - "engagement": A number representing likes/upvotes.
+      - "timestamp": A relative time string (e.g., "2h ago", "15m ago").
+
+      Do not include markdown blocks like \`\`\`json. Just the array.`;
+
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: prompt,
+      });
+
+      if (response.text) {
+        try {
+          const cleanedText = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
+          const data = JSON.parse(cleanedText);
+          setMentions(data);
+          showToast(`Discovered ${data.length} new industry trends!`, 'success');
+        } catch (e) {
+          console.error("Failed to parse mentions JSON:", e);
+        }
+      }
+    } catch (error) {
+      console.error("Error fetching mentions:", error);
+      showToast("Failed to discover trends. Please try again.", 'error');
+    } finally {
+      setIsFetchingMentions(false);
     }
   };
 
@@ -1376,7 +2038,10 @@ Please write a short, engaging reply to the following user comment:
     
     try {
       const response = await fetch(`/api/auth/${platform}/login?workspaceId=${activeWorkspace}`);
-      if (!response.ok) throw new Error('Failed to get auth URL');
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Failed to get auth URL');
+      }
       const { url } = await response.json();
       
       window.open(
@@ -1384,9 +2049,9 @@ Please write a short, engaging reply to the following user comment:
         'OAuth',
         `width=${width},height=${height},left=${left},top=${top}`
       );
-    } catch (error) {
+    } catch (error: any) {
       console.error('OAuth error:', error);
-      showToast('Failed to initiate connection. Please try again.', 'error');
+      showToast(`Connection failed: ${error.message}`, 'error');
     }
   };
 
@@ -1418,8 +2083,8 @@ Please write a short, engaging reply to the following user comment:
 
   const platformConfig: Record<Platform, { icon: any, color: string, name: string }> = {
     twitter: { icon: Twitter, color: 'bg-sky-500', name: 'X (Twitter)' },
-    facebook: { icon: Facebook, color: 'bg-blue-600', name: 'Facebook' },
-    instagram: { icon: Instagram, color: 'bg-pink-600', name: 'Instagram' },
+    facebook: { icon: Facebook, color: 'bg-blue-600', name: 'Meta Business Suite (Facebook)' },
+    instagram: { icon: Instagram, color: 'bg-pink-600', name: 'Meta Business Suite (Instagram)' },
     linkedin: { icon: Linkedin, color: 'bg-blue-700', name: 'LinkedIn' },
     tiktok: { icon: Music, color: 'bg-black', name: 'TikTok' },
     pinterest: { icon: Pin, color: 'bg-red-600', name: 'Pinterest' },
@@ -1448,7 +2113,7 @@ Please write a short, engaging reply to the following user comment:
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Welcome to SocialSync</h1>
           <p className="text-gray-500 mb-8">Sign in to manage your workspaces, schedule posts, and automate your social media.</p>
           <button 
-            onClick={() => { setShowLoginForm(true); }}
+            onClick={signInWithGoogle}
             className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-3 px-4 rounded-xl transition-colors flex items-center justify-center"
           >
             Sign in with Google
@@ -1459,64 +2124,26 @@ Please write a short, engaging reply to the following user comment:
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex text-gray-900 font-sans">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex text-gray-900 dark:text-gray-100 font-sans">
       {/* Media Library Modal */}
       {isMediaLibraryOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[80vh] overflow-hidden flex flex-col">
-            <div className="flex items-center justify-between p-6 border-b border-gray-100">
-              <h2 className="text-xl font-display font-semibold text-gray-800 flex items-center">
-                <Library className="w-6 h-6 mr-2 text-indigo-600" />
-                Media Library
-              </h2>
-              <button 
-                onClick={() => setIsMediaLibraryOpen(false)}
-                className="text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                <X className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="p-6 overflow-y-auto flex-1">
-              {mediaAssets.length === 0 ? (
-                <EmptyState 
-                  icon={Library} 
-                  title="Your media library is empty." 
-                  description="Generate images with AI and save them here."
-                />
-              ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-                  {mediaAssets.map((asset) => (
-                    <div key={asset.id} className="group relative aspect-square rounded-xl overflow-hidden border border-gray-200 bg-gray-50">
-                      <img src={asset.url} alt={asset.name} className="w-full h-full object-cover" />
-                      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center p-4">
-                        <button
-                          onClick={() => {
-                            setPostMediaAssets(prev => [...prev, { url: asset.url, type: 'image' }]);
-                            setIsMediaLibraryOpen(false);
-                          }}
-                          className="bg-white text-gray-900 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-100 transition-colors w-full mb-2"
-                        >
-                          Use in Post
-                        </button>
-                        <button
-                          onClick={async () => {
-                            if (window.confirm('Are you sure you want to delete this asset?')) {
-                              try {
-                                await deleteDoc(doc(db, 'mediaAssets', asset.id));
-                              } catch (error) {
-                                console.error("Failed to delete asset:", error);
-                              }
-                            }
-                          }}
-                          className="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-700 transition-colors w-full"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col border border-gray-200 dark:border-gray-700 relative">
+            <button 
+              onClick={() => setIsMediaLibraryOpen(false)}
+              className="absolute top-4 right-4 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors z-10 bg-white/80 dark:bg-gray-800/80 p-1 rounded-full"
+            >
+              <X className="w-6 h-6" />
+            </button>
+            <div className="overflow-y-auto flex-1 p-2">
+              <MediaLibrary 
+                workspaceId={activeWorkspace} 
+                isModal={true}
+                onSelectAsset={(asset) => {
+                  setPostMediaAssets(prev => [...prev, { url: asset.url, type: 'image' }]);
+                  setIsMediaLibraryOpen(false);
+                }}
+              />
             </div>
           </div>
         </div>
@@ -1525,12 +2152,12 @@ Please write a short, engaging reply to the following user comment:
       {/* Settings Modal */}
       {isSettingsOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-md shadow-xl border border-gray-200 dark:border-gray-700">
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-semibold text-gray-800">App Settings</h2>
+              <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">App Settings</h2>
               <button 
                 onClick={() => setIsSettingsOpen(false)}
-                className="text-gray-400 hover:text-gray-600 transition-colors"
+                className="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1538,11 +2165,11 @@ Please write a short, engaging reply to the following user comment:
             
             <div className="space-y-5">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">AI Provider</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">AI Provider</label>
                 <select 
                   value={aiProvider} 
                   onChange={(e) => setAiProvider(e.target.value as 'gemini' | 'ollama' | 'openrouter' | 'groq')}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 outline-none"
+                  className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 outline-none"
                 >
                   <option value="gemini">Google Gemini (Cloud)</option>
                   <option value="ollama">Ollama (Local/VPS)</option>
@@ -1552,7 +2179,7 @@ Please write a short, engaging reply to the following user comment:
               </div>
 
               {aiProvider === 'ollama' && (
-                <div className="space-y-4 p-4 bg-gray-50 rounded-xl border border-gray-100">
+                <div className="space-y-4 p-4 bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-gray-100 dark:border-gray-700">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Ollama Endpoint URL</label>
                     <input 
@@ -1689,6 +2316,16 @@ Please write a short, engaging reply to the following user comment:
                 <h3 className="text-sm font-semibold text-gray-800 mb-3">GoHighLevel (GHL) Integration</h3>
                 <div className="space-y-3">
                   <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Image Generation API Key (e.g., OpenAI)</label>
+                    <input 
+                      type="password" 
+                      value={imageGenApiKey}
+                      onChange={(e) => setImageGenApiKey(e.target.value)}
+                      placeholder="Paste API Key here"
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                    />
+                  </div>
+                  <div>
                     <label className="block text-xs font-medium text-gray-700 mb-1">GHL API Key</label>
                     <input 
                       type="password" 
@@ -1728,7 +2365,162 @@ Please write a short, engaging reply to the following user comment:
         </div>
       )}
 
-      {/* Preview Modal */}
+      {/* AI Content Calendar Generator Modal */}
+      {isCalendarGeneratorOpen && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col border border-gray-200 dark:border-gray-700">
+            <div className="flex items-center justify-between p-6 border-b border-gray-100 dark:border-gray-700">
+              <h2 className="text-xl font-display font-semibold text-gray-800 dark:text-gray-100 flex items-center">
+                <Sparkles className="w-6 h-6 mr-2 text-indigo-600 dark:text-indigo-400" />
+                AI Content Calendar Generator
+              </h2>
+              <button 
+                onClick={() => {
+                  setIsCalendarGeneratorOpen(false);
+                  setGeneratedCalendarPreview([]);
+                }}
+                className="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="p-6 overflow-y-auto flex-1">
+              {generatedCalendarPreview.length === 0 ? (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Posts per day</label>
+                      <input 
+                        type="number" 
+                        min="1" 
+                        max="5"
+                        value={calendarGenPostsPerDay}
+                        onChange={(e) => setCalendarGenPostsPerDay(parseInt(e.target.value))}
+                        className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 outline-none"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">How many posts should AI suggest for each day of the week?</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Target Platforms</label>
+                      <div className="flex flex-wrap gap-2">
+                        {Object.keys(platformConfig).map((p) => {
+                          const platform = p as Platform;
+                          const isSelected = calendarGenPlatforms.includes(platform);
+                          return (
+                            <button
+                              key={platform}
+                              onClick={() => {
+                                setCalendarGenPlatforms(prev => 
+                                  prev.includes(platform) ? prev.filter(x => x !== platform) : [...prev, platform]
+                                );
+                              }}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                                isSelected 
+                                  ? 'bg-indigo-600 text-white shadow-sm' 
+                                  : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                              }`}
+                            >
+                              {platformConfig[platform].name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-indigo-50 dark:bg-indigo-900/20 p-4 rounded-xl border border-indigo-100 dark:border-indigo-800">
+                    <h3 className="text-sm font-semibold text-indigo-900 dark:text-indigo-100 mb-2 flex items-center">
+                      <Bot className="w-4 h-4 mr-2" />
+                      AI Context
+                    </h3>
+                    <p className="text-xs text-indigo-700 dark:text-indigo-300 mb-3">
+                      The AI will use your Brand Personality and Persona settings to generate relevant content.
+                    </p>
+                    <div className="text-xs text-indigo-600 dark:text-indigo-400 italic">
+                      {aiPersona ? `Current Persona: "${aiPersona.substring(0, 100)}..."` : "No custom persona set. Using default helpful assistant."}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={generateAICalendar}
+                    disabled={isGeneratingCalendar || calendarGenPlatforms.length === 0}
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-3 rounded-xl transition-colors flex items-center justify-center disabled:opacity-50"
+                  >
+                    {isGeneratingCalendar ? (
+                      <>
+                        <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                        Generating Content Strategy...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-5 h-5 mr-2" />
+                        Generate 7-Day Calendar
+                      </>
+                    )}
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="font-semibold text-gray-800 dark:text-gray-100">Suggested Content</h3>
+                    <button 
+                      onClick={() => setGeneratedCalendarPreview([])}
+                      className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
+                    >
+                      Start Over
+                    </button>
+                  </div>
+                  <div className="space-y-3">
+                    {generatedCalendarPreview.map((post, idx) => (
+                      <div key={idx} className="bg-gray-50 dark:bg-gray-900/50 p-4 rounded-xl border border-gray-200 dark:border-gray-700">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex gap-1">
+                            {post.platforms.map((p: Platform) => {
+                              const config = platformConfig[p];
+                              const Icon = config.icon;
+                              return (
+                                <div key={p} className={`${config.color} w-5 h-5 rounded-full flex items-center justify-center text-white`}>
+                                  <Icon className="w-3 h-3" />
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <span className="text-xs text-gray-500 flex items-center">
+                            <Clock className="w-3 h-3 mr-1" />
+                            {moment(post.scheduledFor).format('ddd, MMM D @ h:mm A')}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-800 dark:text-gray-200 line-clamp-3">{post.content}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {generatedCalendarPreview.length > 0 && (
+              <div className="p-6 border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 flex justify-end gap-3">
+                <button
+                  onClick={() => {
+                    setIsCalendarGeneratorOpen(false);
+                    setGeneratedCalendarPreview([]);
+                  }}
+                  className="px-4 py-2 text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={saveGeneratedCalendar}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-xl font-medium transition-colors shadow-sm"
+                >
+                  Save to Drafts
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {isPreviewOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl max-h-[90vh] overflow-y-auto">
@@ -1796,7 +2588,7 @@ Please write a short, engaging reply to the following user comment:
 
       {/* Sidebar */}
       <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <div className="h-16 flex items-center px-6 border-b border-gray-200">
+        <div className="h-16 flex items-center px-6 border-b border-gray-200 dark:border-gray-700">
           <Share2 className="w-6 h-6 text-indigo-600 mr-2" />
           <span className="text-xl font-display font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-600">
             SocialSync
@@ -1871,57 +2663,64 @@ Please write a short, engaging reply to the following user comment:
         <nav className="flex-1 px-4 py-6 space-y-1 overflow-y-auto">
           <button 
             onClick={() => { setActiveTab('dashboard'); setIsMobileMenuOpen(false); }}
-            className={`w-full flex items-center px-3 py-2.5 rounded-lg font-medium transition-colors ${activeTab === 'dashboard' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-700 hover:bg-gray-100'}`}
+            className={`w-full flex items-center px-3 py-2.5 rounded-lg font-medium transition-colors ${activeTab === 'dashboard' ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
           >
-            <LayoutDashboard className={`w-5 h-5 mr-3 ${activeTab === 'dashboard' ? 'text-indigo-600' : 'text-gray-400'}`} />
+            <LayoutDashboard className={`w-5 h-5 mr-3 ${activeTab === 'dashboard' ? 'text-indigo-600' : 'text-gray-400 dark:text-gray-500'}`} />
             Dashboard
           </button>
           <button 
             onClick={() => { setActiveTab('engagement'); setIsMobileMenuOpen(false); }}
-            className={`w-full flex items-center px-3 py-2.5 rounded-lg font-medium transition-colors ${activeTab === 'engagement' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-700 hover:bg-gray-100'}`}
+            className={`w-full flex items-center px-3 py-2.5 rounded-lg font-medium transition-colors ${activeTab === 'engagement' ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
           >
-            <MessageCircle className={`w-5 h-5 mr-3 ${activeTab === 'engagement' ? 'text-indigo-600' : 'text-gray-400'}`} />
+            <MessageCircle className={`w-5 h-5 mr-3 ${activeTab === 'engagement' ? 'text-indigo-600' : 'text-gray-400 dark:text-gray-500'}`} />
             Engagement Inbox
           </button>
           <button 
             onClick={() => { setActiveTab('accounts'); setIsMobileMenuOpen(false); }}
-            className={`w-full flex items-center px-3 py-2.5 rounded-lg font-medium transition-colors ${activeTab === 'accounts' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-700 hover:bg-gray-100'}`}
+            className={`w-full flex items-center px-3 py-2.5 rounded-lg font-medium transition-colors ${activeTab === 'accounts' ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
           >
-            <Share2 className={`w-5 h-5 mr-3 ${activeTab === 'accounts' ? 'text-indigo-600' : 'text-gray-400'}`} />
+            <Share2 className={`w-5 h-5 mr-3 ${activeTab === 'accounts' ? 'text-indigo-600' : 'text-gray-400 dark:text-gray-500'}`} />
             Accounts
           </button>
           <button 
             onClick={() => { setActiveTab('calendar'); setIsMobileMenuOpen(false); }}
-            className={`w-full flex items-center px-3 py-2.5 rounded-lg font-medium transition-colors ${activeTab === 'calendar' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-700 hover:bg-gray-100'}`}
+            className={`w-full flex items-center px-3 py-2.5 rounded-lg font-medium transition-colors ${activeTab === 'calendar' ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
           >
-            <Calendar className={`w-5 h-5 mr-3 ${activeTab === 'calendar' ? 'text-indigo-600' : 'text-gray-400'}`} />
+            <Calendar className={`w-5 h-5 mr-3 ${activeTab === 'calendar' ? 'text-indigo-600' : 'text-gray-400 dark:text-gray-500'}`} />
             Calendar
           </button>
           <button 
             onClick={() => { setActiveTab('media'); setIsMobileMenuOpen(false); }}
-            className={`w-full flex items-center px-3 py-2.5 rounded-lg font-medium transition-colors ${activeTab === 'media' ? 'bg-indigo-50 text-indigo-700' : 'text-gray-700 hover:bg-gray-100'}`}
+            className={`w-full flex items-center px-3 py-2.5 rounded-lg font-medium transition-colors ${activeTab === 'media' ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
           >
-            <Library className={`w-5 h-5 mr-3 ${activeTab === 'media' ? 'text-indigo-600' : 'text-gray-400'}`} />
+            <Library className={`w-5 h-5 mr-3 ${activeTab === 'media' ? 'text-indigo-600' : 'text-gray-400 dark:text-gray-500'}`} />
             Media Library
           </button>
           <button 
-            onClick={() => { setIsSettingsOpen(true); setIsMobileMenuOpen(false); }}
-            className="w-full flex items-center px-3 py-2.5 text-gray-700 hover:bg-gray-100 rounded-lg font-medium transition-colors"
+            onClick={() => { setActiveTab('analytics'); setIsMobileMenuOpen(false); }}
+            className={`w-full flex items-center px-3 py-2.5 rounded-lg font-medium transition-colors ${activeTab === 'analytics' ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
           >
-            <Settings className="w-5 h-5 mr-3 text-gray-400" />
+            <BarChart2 className={`w-5 h-5 mr-3 ${activeTab === 'analytics' ? 'text-indigo-600' : 'text-gray-400 dark:text-gray-500'}`} />
+            Analytics
+          </button>
+          <button 
+            onClick={() => { setIsSettingsOpen(true); setIsMobileMenuOpen(false); }}
+            className="w-full flex items-center px-3 py-2.5 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg font-medium transition-colors"
+          >
+            <Settings className="w-5 h-5 mr-3 text-gray-400 dark:text-gray-500" />
             Settings
           </button>
         </nav>
-        <div className="p-4 border-t border-gray-200">
+        <div className="p-4 border-t border-gray-200 dark:border-gray-700">
           <div className="flex items-center justify-between">
             <div className="flex items-center">
-              <img src={user.photoURL || ''} alt="Profile" className="w-8 h-8 rounded-full bg-indigo-100" />
+              <img src={user.photoURL || ''} alt="Profile" className="w-8 h-8 rounded-full bg-indigo-100 dark:bg-indigo-900/50" />
               <div className="ml-3">
-                <p className="text-sm font-medium text-gray-700 truncate w-24">{user.displayName}</p>
-                <p className="text-xs text-gray-500">Pro Plan</p>
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-200 truncate w-24">{user.displayName}</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Pro Plan</p>
               </div>
             </div>
-            <button onClick={handleSimpleLogout} className="text-gray-400 hover:text-red-500 transition-colors" title="Sign Out">
+            <button onClick={logOut} className="text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition-colors" title="Sign Out">
               <X className="w-4 h-4" />
             </button>
           </div>
@@ -1938,8 +2737,8 @@ Please write a short, engaging reply to the following user comment:
           <LayoutDashboard className="w-6 h-6" />
         </button>
 
-        <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-8 sticky top-0 z-30">
-          <h1 className="text-xl sm:text-2xl font-display font-semibold text-gray-800 truncate pr-4">
+        <header className="h-16 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-4 sm:px-8 sticky top-0 z-30">
+          <h1 className="text-xl sm:text-2xl font-display font-semibold text-gray-800 dark:text-gray-100 truncate pr-4">
             {activeTab === 'dashboard' ? 'Dashboard' : activeTab === 'accounts' ? 'Connected Accounts' : activeTab === 'calendar' ? 'Content Calendar' : activeTab === 'media' ? 'Media Library' : 'Engagement & Auto-Replies'}
           </h1>
           <div className="flex items-center gap-4">
@@ -1973,13 +2772,13 @@ Please write a short, engaging reply to the following user comment:
           
           {activeTab === 'accounts' ? (
             <div className="space-y-6">
-              <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-200">
-                <h2 className="text-xl font-semibold text-gray-800 mb-2">Manage Connections</h2>
-                <div className="text-gray-600 mb-8 max-w-3xl space-y-4">
+              <div className="bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700">
+                <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100 mb-2">Manage Connections</h2>
+                <div className="text-gray-600 dark:text-gray-400 mb-8 max-w-3xl space-y-4">
                   <p>
                     Toggle the platforms below to enable them in your post composer for this workspace. 
                   </p>
-                  <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 text-sm text-blue-800">
+                  <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-100 dark:border-blue-800 text-sm text-blue-800 dark:text-blue-300">
                     <strong>How posting works:</strong>
                     <ul className="list-disc ml-5 mt-2 space-y-1">
                       <li><strong>Manual Mode (Default):</strong> Use this app to plan, write, and generate AI content. Then copy/paste your posts to the actual social networks.</li>
@@ -1996,12 +2795,14 @@ Please write a short, engaging reply to the following user comment:
                     const oauthData = oauthConnections[platform];
                     
                     return (
-                      <div key={platform} className="border border-gray-200 rounded-xl p-5 flex flex-col justify-between bg-gray-50 hover:bg-gray-100 transition-colors gap-4">
+                      <div key={platform} className="border border-gray-200 dark:border-gray-700 rounded-xl p-5 flex flex-col justify-between bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors gap-4">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center">
-                            <div className={`${config.color} w-12 h-12 rounded-full flex items-center justify-center text-white mr-4 shadow-sm`}>
-                              <Icon className="w-6 h-6" />
-                            </div>
+                            <Tooltip text={config.name}>
+                              <div className={`${config.color} w-12 h-12 rounded-full flex items-center justify-center text-white mr-4 shadow-sm cursor-help`}>
+                                <Icon className="w-6 h-6" />
+                              </div>
+                            </Tooltip>
                             <div>
                               <p className="font-medium text-gray-900">{config.name}</p>
                               <p className="text-xs text-gray-500 mt-0.5">{isConnected ? 'Enabled' : 'Disabled'}</p>
@@ -2030,7 +2831,7 @@ Please write a short, engaging reply to the following user comment:
                             <div className="text-sm text-gray-500">Not connected natively</div>
                           )}
                           
-                          {platform === 'twitter' && (
+                          {['twitter', 'linkedin', 'facebook', 'instagram', 'tiktok', 'youtube', 'pinterest'].includes(platform) && (
                             <button
                               onClick={() => handleOAuthConnect(platform)}
                               className="text-xs font-medium text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg transition-colors"
@@ -2045,48 +2846,437 @@ Please write a short, engaging reply to the following user comment:
                 </div>
               </div>
             </div>
+          ) : activeTab === 'analytics' ? (
+            <div className="space-y-8">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h1 className="text-2xl font-display font-bold text-gray-900">Advanced Analytics</h1>
+                  <p className="text-gray-500">Real-time performance insights across all connected platforms.</p>
+                </div>
+                <div className="flex gap-2">
+                  <button className="flex items-center px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors shadow-sm">
+                    <Calendar className="w-4 h-4 mr-2" />
+                    Last 30 Days
+                  </button>
+                  <button className="flex items-center px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 transition-colors shadow-sm">
+                    Export PDF
+                  </button>
+                </div>
+              </div>
+
+              {/* Summary Stats */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                {[
+                  { label: 'Total Likes', value: analyticsData.reduce((acc, curr) => acc + curr.likes, 0), icon: ThumbsUp, color: 'text-blue-600', bg: 'bg-blue-50' },
+                  { label: 'Total Shares', value: analyticsData.reduce((acc, curr) => acc + curr.shares, 0), icon: Share2, color: 'text-green-600', bg: 'bg-green-50' },
+                  { label: 'Total Comments', value: analyticsData.reduce((acc, curr) => acc + curr.comments, 0), icon: MessageCircle, color: 'text-purple-600', bg: 'bg-purple-50' },
+                  { label: 'Avg. Engagement', value: analyticsData.length > 0 ? ((analyticsData.reduce((acc, curr) => acc + curr.likes + curr.shares + curr.comments, 0) / analyticsData.length).toFixed(1)) : 0, icon: BarChart2, color: 'text-orange-600', bg: 'bg-orange-50' },
+                ].map((stat, i) => (
+                  <div key={i} className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className={`${stat.bg} p-2 rounded-lg`}>
+                        <stat.icon className={`w-5 h-5 ${stat.color}`} />
+                      </div>
+                      <span className="text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">+12.5%</span>
+                    </div>
+                    <p className="text-sm text-gray-500 mb-1">{stat.label}</p>
+                    <p className="text-2xl font-bold text-gray-900">{stat.value}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Charts Grid */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {/* Best Time to Post */}
+                <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm flex flex-col justify-center items-center">
+                  <h3 className="text-lg font-semibold text-gray-800 mb-6 w-full">Best Time to Post</h3>
+                  <div className="text-center">
+                    <div className="w-24 h-24 bg-indigo-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <Clock className="w-10 h-10 text-indigo-600" />
+                    </div>
+                    <p className="text-4xl font-bold text-gray-900 mb-2">
+                      {(() => {
+                        const hourlyEngagement: Record<number, { total: number, count: number }> = {};
+                        analyticsData.forEach(post => {
+                          const hour = new Date(post.date).getHours();
+                          const engagement = post.likes + post.shares + post.comments;
+                          if (!hourlyEngagement[hour]) hourlyEngagement[hour] = { total: 0, count: 0 };
+                          hourlyEngagement[hour].total += engagement;
+                          hourlyEngagement[hour].count += 1;
+                        });
+                        
+                        let bestHour = -1;
+                        let maxAvg = -1;
+                        Object.entries(hourlyEngagement).forEach(([hour, data]) => {
+                          const avg = data.total / data.count;
+                          if (avg > maxAvg) {
+                            maxAvg = avg;
+                            bestHour = parseInt(hour);
+                          }
+                        });
+                        return bestHour === -1 ? 'N/A' : `${bestHour}:00`;
+                      })()}
+                    </p>
+                    <p className="text-gray-500">Based on your historical engagement data.</p>
+                  </div>
+                </div>
+
+                {/* Engagement Over Time */}
+                <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
+                  <h3 className="text-lg font-semibold text-gray-800 mb-6">Engagement Over Time</h3>
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={analyticsData}>
+                        <defs>
+                          <linearGradient id="colorLikes" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.1}/>
+                            <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
+                        <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#9ca3af'}} />
+                        <YAxis axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#9ca3af'}} />
+                        <RechartsTooltip 
+                          contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                        />
+                        <Area type="monotone" dataKey="likes" stroke="#6366f1" fillOpacity={1} fill="url(#colorLikes)" strokeWidth={2} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Platform Distribution */}
+                <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
+                  <h3 className="text-lg font-semibold text-gray-800 mb-6">Platform Distribution</h3>
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={Object.entries(analyticsData.reduce((acc, curr) => {
+                            acc[curr.platform] = (acc[curr.platform] || 0) + 1;
+                            return acc;
+                          }, {} as Record<string, number>)).map(([name, value]) => ({ name, value }))}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={60}
+                          outerRadius={80}
+                          paddingAngle={5}
+                          dataKey="value"
+                        >
+                          {analyticsData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'][index % 5]} />
+                          ))}
+                        </Pie>
+                        <RechartsTooltip />
+                        <Legend verticalAlign="bottom" height={36}/>
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Likes vs Comments */}
+                <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm lg:col-span-2">
+                  <h3 className="text-lg font-semibold text-gray-800 mb-6">Engagement Breakdown by Platform</h3>
+                  <div className="h-[300px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={analyticsData}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
+                        <XAxis dataKey="platform" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#9ca3af'}} />
+                        <YAxis axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#9ca3af'}} />
+                        <RechartsTooltip 
+                          contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                        />
+                        <Bar dataKey="likes" fill="#6366f1" radius={[4, 4, 0, 0]} barSize={20} />
+                        <Bar dataKey="comments" fill="#10b981" radius={[4, 4, 0, 0]} barSize={20} />
+                        <Bar dataKey="shares" fill="#f59e0b" radius={[4, 4, 0, 0]} barSize={20} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+
+              {/* Competitor Benchmarking */}
+              <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm">
+                <div className="flex items-center justify-between mb-6">
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Competitor Benchmarking</h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">Compare your performance against industry rivals.</p>
+                  </div>
+                  <button 
+                    onClick={() => setIsAddingCompetitor(true)}
+                    className="flex items-center px-4 py-2 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 rounded-xl text-sm font-medium hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors"
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Competitor
+                  </button>
+                </div>
+
+                {isAddingCompetitor && (
+                  <div className="mb-6 p-4 bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-gray-200 dark:border-gray-700 flex flex-wrap gap-4 items-end">
+                    <div className="flex-1 min-w-[200px]">
+                      <label className="block text-xs font-bold text-gray-400 uppercase mb-1">Handle / Name</label>
+                      <input 
+                        type="text" 
+                        value={newCompetitorHandle}
+                        onChange={(e) => setNewCompetitorHandle(e.target.value)}
+                        placeholder="@competitor"
+                        className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+                    <div className="w-40">
+                      <label className="block text-xs font-bold text-gray-400 uppercase mb-1">Platform</label>
+                      <select 
+                        value={newCompetitorPlatform}
+                        onChange={(e) => setNewCompetitorPlatform(e.target.value as Platform)}
+                        className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                      >
+                        {Object.keys(platformConfig).map(p => (
+                          <option key={p} value={p}>{platformConfig[p as Platform].name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => setIsAddingCompetitor(false)}
+                        className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700"
+                      >
+                        Cancel
+                      </button>
+                      <button 
+                        onClick={handleAddCompetitor}
+                        className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700"
+                      >
+                        Add
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {/* Your Stats Card */}
+                  <div className="bg-indigo-50 dark:bg-indigo-900/20 p-6 rounded-2xl border border-indigo-100 dark:border-indigo-800">
+                    <div className="flex items-center mb-4">
+                      <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-white mr-3">
+                        <UserIcon className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-indigo-900 dark:text-indigo-100">Your Brand</h4>
+                        <p className="text-xs text-indigo-600 dark:text-indigo-400">Average across platforms</p>
+                      </div>
+                    </div>
+                    <div className="space-y-4">
+                      <div>
+                        <p className="text-xs text-indigo-500 uppercase font-bold mb-1">Avg. Engagement</p>
+                        <p className="text-2xl font-bold text-indigo-900 dark:text-indigo-100">
+                          {analyticsData.length > 0 ? (analyticsData.reduce((acc, curr) => acc + curr.likes + curr.shares + curr.comments, 0) / analyticsData.length).toFixed(1) : '0.0'}%
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-indigo-500 uppercase font-bold mb-1">Posts / Week</p>
+                        <p className="text-2xl font-bold text-indigo-900 dark:text-indigo-100">
+                          {Math.round(posts.filter(p => p.status === 'published').length / 4) || 0}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Competitor Cards */}
+                  {competitors.map((comp) => (
+                    <div key={comp.id} className="bg-white dark:bg-gray-800 p-6 rounded-2xl border border-gray-200 dark:border-gray-700 relative group">
+                      <button 
+                        onClick={() => handleRemoveCompetitor(comp.id)}
+                        className="absolute top-4 right-4 text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                      <div className="flex items-center mb-4">
+                        <div className={`${platformConfig[comp.platform as Platform].color} w-10 h-10 rounded-full flex items-center justify-center text-white mr-3`}>
+                          {React.createElement(platformConfig[comp.platform as Platform].icon, { className: 'w-5 h-5' })}
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-gray-900 dark:text-gray-100">{comp.handle}</h4>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">{platformConfig[comp.platform as Platform].name}</p>
+                        </div>
+                      </div>
+                      <div className="space-y-4">
+                        <div>
+                          <p className="text-xs text-gray-400 uppercase font-bold mb-1">Avg. Engagement</p>
+                          <div className="flex items-center">
+                            <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{comp.metrics.avgEngagement}%</p>
+                            <span className={`ml-2 text-xs font-medium ${parseFloat(comp.metrics.avgEngagement) > (analyticsData.length > 0 ? parseFloat((analyticsData.reduce((acc, curr) => acc + curr.likes + curr.shares + curr.comments, 0) / analyticsData.length).toFixed(1)) : 0) ? 'text-red-500' : 'text-green-500'}`}>
+                              {parseFloat(comp.metrics.avgEngagement) > (analyticsData.length > 0 ? parseFloat((analyticsData.reduce((acc, curr) => acc + curr.likes + curr.shares + curr.comments, 0) / analyticsData.length).toFixed(1)) : 0) ? 'Above you' : 'Below you'}
+                            </span>
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-xs text-gray-400 uppercase font-bold mb-1">Est. Followers</p>
+                          <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{(comp.metrics.followers / 1000).toFixed(1)}k</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+
+                  {competitors.length === 0 && !isAddingCompetitor && (
+                    <div className="lg:col-span-2 flex flex-col items-center justify-center p-12 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-2xl">
+                      <Users className="w-12 h-12 text-gray-300 mb-4" />
+                      <p className="text-gray-500 dark:text-gray-400 text-center">No competitors added yet. Start tracking your rivals to see how you stack up!</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Hashtag Performance */}
+              <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm">
+                <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-6">Hashtag Performance</h3>
+                <div className="flex flex-wrap gap-3">
+                  {getHashtagPerformance().length > 0 ? (
+                    getHashtagPerformance().map((item, index) => (
+                      <div 
+                        key={index} 
+                        className="bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 rounded-xl p-4 flex flex-col items-center justify-center min-w-[120px]"
+                        style={{ 
+                          fontSize: `${Math.max(0.8, Math.min(1.5, item.avgEngagement / 10))}rem`,
+                          opacity: Math.max(0.6, Math.min(1, item.count / 5))
+                        }}
+                      >
+                        <span className="font-bold text-indigo-600 dark:text-indigo-400 mb-1">{item.tag}</span>
+                        <div className="flex flex-col items-center">
+                          <span className="text-[10px] text-gray-400 uppercase font-bold">Avg. Eng.</span>
+                          <span className="text-sm font-bold text-gray-700 dark:text-gray-200">{item.avgEngagement.toFixed(1)}</span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="w-full py-12 flex flex-col items-center justify-center border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-2xl">
+                      <Hash className="w-12 h-12 text-gray-300 mb-4" />
+                      <p className="text-gray-500 dark:text-gray-400">No hashtag data available yet. Start posting with hashtags to see performance insights.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           ) : activeTab === 'dashboard' ? (
             <>
+              {/* AI Post Ideas Section */}
+              <section className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden mb-6">
+                <div className="p-6 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+                  <div>
+                    <h2 className="text-lg font-display font-semibold text-gray-800 dark:text-gray-100 flex items-center">
+                      <Sparkles className="w-5 h-5 mr-2 text-indigo-500" />
+                      AI Post Ideas
+                    </h2>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                      Get personalized content ideas based on your brand kit and current trends.
+                    </p>
+                  </div>
+                  <button
+                    onClick={generatePostIdeas}
+                    disabled={isGeneratingIdeas}
+                    className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 dark:text-indigo-300 px-4 py-2 rounded-lg font-medium flex items-center transition-colors disabled:opacity-50"
+                  >
+                    {isGeneratingIdeas ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <Wand2 className="w-4 h-4 mr-2" />
+                    )}
+                    Generate Ideas
+                  </button>
+                </div>
+                {postIdeas.length > 0 && (
+                  <div className="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {postIdeas.map((idea, index) => (
+                      <div key={index} className="bg-gray-50 dark:bg-gray-900/50 rounded-xl p-4 border border-gray-100 dark:border-gray-700 hover:border-indigo-200 dark:hover:border-indigo-800 transition-colors group">
+                        <h3 className="font-semibold text-gray-800 dark:text-gray-200 mb-2">{idea.title}</h3>
+                        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">{idea.description}</p>
+                        <button
+                          onClick={() => {
+                            setContent(`Write a post about: ${idea.title}\n\nContext: ${idea.description}`);
+                            setComposerMode('write');
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                          className="text-indigo-600 dark:text-indigo-400 text-sm font-medium flex items-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <Edit3 className="w-4 h-4 mr-1" />
+                          Draft this post
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
               {/* Composer Section */}
-          <section className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-            <div className="p-6 border-b border-gray-100">
+          <section className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <div className="p-6 border-b border-gray-100 dark:border-gray-700">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-display font-semibold text-gray-800">Create New Post</h2>
-                <div className="flex bg-gray-100 p-1 rounded-lg">
+                <h2 className="text-lg font-display font-semibold text-gray-800 dark:text-gray-100">Create New Post</h2>
+                <div className="flex bg-gray-100 dark:bg-gray-700 p-1 rounded-lg">
                   <button
                     onClick={() => setComposerMode('write')}
-                    className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${composerMode === 'write' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${composerMode === 'write' ? 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
                   >
                     Write from Scratch
                   </button>
                   <button
                     onClick={() => setComposerMode('repurpose')}
-                    className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${composerMode === 'repurpose' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${composerMode === 'repurpose' ? 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
                   >
                     Repurpose Content
                   </button>
+                  <div className="relative">
+                    <button
+                      onClick={() => setIsTemplatesDropdownOpen(!isTemplatesDropdownOpen)}
+                      className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors flex items-center ${isTemplatesDropdownOpen ? 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
+                    >
+                      <FileText className="w-4 h-4 mr-2" />
+                      Templates
+                      <ChevronDown className={`w-3 h-3 ml-1 transition-transform ${isTemplatesDropdownOpen ? 'rotate-180' : ''}`} />
+                    </button>
+                    
+                    {isTemplatesDropdownOpen && (
+                      <div className="absolute top-full right-0 mt-2 w-64 bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 z-50 py-2 overflow-hidden animate-in fade-in zoom-in duration-200">
+                        <div className="px-4 py-2 border-b border-gray-100 dark:border-gray-700 mb-1">
+                          <p className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">AI Prompt Templates</p>
+                        </div>
+                        {AI_TEMPLATES.map(template => (
+                          <button
+                            key={template.id}
+                            onClick={() => {
+                              setContent(template.prompt);
+                              setComposerMode('write');
+                              setIsTemplatesDropdownOpen(false);
+                            }}
+                            className="w-full text-left px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors flex items-center group"
+                          >
+                            <Sparkles className="w-3.5 h-3.5 mr-2 text-indigo-400 dark:text-indigo-500 group-hover:text-indigo-600 dark:group-hover:text-indigo-400" />
+                            {template.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
               
               {composerMode === 'repurpose' ? (
                 <div className="space-y-4">
-                  <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 mb-4">
-                    <h3 className="text-indigo-800 font-medium flex items-center mb-2">
+                  <div className="bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800 rounded-xl p-4 mb-4">
+                    <h3 className="text-indigo-800 dark:text-indigo-200 font-medium flex items-center mb-2">
                       <Sparkles className="w-5 h-5 mr-2" />
                       Content Repurposing Engine
                     </h3>
-                    <p className="text-indigo-600 text-sm">
+                    <p className="text-indigo-600 dark:text-indigo-400 text-sm">
                       Paste a URL (like a blog post or news article) or a long block of text. Our AI will automatically generate 3 distinct social media posts tailored for different platforms and save them to your Drafts.
                     </p>
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Source URL or Text</label>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Source URL or Text</label>
                     <textarea
                       value={repurposeSource}
                       onChange={(e) => setRepurposeSource(e.target.value)}
                       placeholder="https://example.com/blog-post OR paste your long text here..."
-                      className="w-full border border-gray-300 rounded-xl p-4 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none resize-none transition-all min-h-[120px]"
+                      className="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-xl p-4 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none resize-none transition-all min-h-[120px]"
                     />
                   </div>
                   
@@ -2109,7 +3299,7 @@ Please write a short, engaging reply to the following user comment:
                 <>
               {/* Platform Selector */}
               <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">Select Platforms</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Select Platforms</label>
                 <div className="flex flex-wrap gap-3">
                   {(Object.keys(platformConfig) as Platform[]).map((platform) => {
                     const config = platformConfig[platform];
@@ -2120,13 +3310,15 @@ Please write a short, engaging reply to the following user comment:
                       <button
                         key={platform}
                         onClick={() => togglePlatform(platform)}
-                        className={`flex items-center px-4 py-2 rounded-full border transition-all ${
+                        className={`flex items-center px-4 py-2 rounded-full border transition-all group/platform ${
                           isSelected 
                             ? `${config.color} border-transparent text-white shadow-md transform scale-105` 
-                            : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'
+                            : 'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
                         }`}
                       >
-                        <Icon className="w-4 h-4 mr-2" />
+                        <Tooltip text={config.name}>
+                          <Icon className="w-4 h-4 mr-2" />
+                        </Tooltip>
                         <span className="text-sm font-medium">{config.name}</span>
                       </button>
                     );
@@ -2140,12 +3332,38 @@ Please write a short, engaging reply to the following user comment:
                   value={content}
                   onChange={(e) => setContent(e.target.value)}
                   placeholder="What do you want to share?"
-                  className="w-full h-32 p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none transition-all"
+                  className="w-full h-32 p-4 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none transition-all"
                 />
               </div>
 
               {/* AI Improvement Options */}
               <div className="flex flex-wrap gap-2 mb-6">
+                <div className="relative">
+                  <button
+                    onClick={() => setIsTemplatesDropdownOpen(!isTemplatesDropdownOpen)}
+                    className="flex items-center px-3 py-1.5 bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200 rounded-lg text-xs font-medium hover:bg-indigo-200 dark:hover:bg-indigo-900/60 transition-colors"
+                  >
+                    <FileText className="w-3 h-3 mr-1" />
+                    Templates
+                    <ChevronDown className="w-3 h-3 ml-1" />
+                  </button>
+                  {isTemplatesDropdownOpen && (
+                    <div className="absolute top-full left-0 mt-2 w-48 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg z-10 py-1">
+                      {AI_TEMPLATES.map((template) => (
+                        <button
+                          key={template.id}
+                          onClick={() => {
+                            setContent(prev => prev + (prev ? '\n\n' : '') + template.prompt);
+                            setIsTemplatesDropdownOpen(false);
+                          }}
+                          className="w-full text-left px-4 py-2 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                        >
+                          {template.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <button
                   onClick={() => improveContent('rephrase')}
                   disabled={isImproving || !content.trim()}
@@ -2314,13 +3532,27 @@ Please write a short, engaging reply to the following user comment:
                       onClick={handleGenerateImage}
                       disabled={isGeneratingImage || !imagePrompt.trim()}
                       className="bg-purple-100 hover:bg-purple-200 text-purple-700 px-4 py-2 rounded-lg font-medium text-sm flex items-center transition-colors disabled:opacity-50"
+                      title="Generate using DALL-E 3 (Requires API Key)"
                     >
                       {isGeneratingImage ? (
                         <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                       ) : (
                         <Sparkles className="w-4 h-4 mr-2" />
                       )}
-                      Generate
+                      DALL-E
+                    </button>
+                    <button
+                      onClick={handleGenerateImageFree}
+                      disabled={isGeneratingImage || !imagePrompt.trim()}
+                      className="bg-indigo-100 hover:bg-indigo-200 text-indigo-700 px-4 py-2 rounded-lg font-medium text-sm flex items-center transition-colors disabled:opacity-50"
+                      title="Generate using Pollinations (Free)"
+                    >
+                      {isGeneratingImage ? (
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      ) : (
+                        <Zap className="w-4 h-4 mr-2" />
+                      )}
+                      Free Gen
                     </button>
                   </div>
                   
@@ -2386,29 +3618,45 @@ Please write a short, engaging reply to the following user comment:
                   </p>
                 )}
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <Clock className="w-5 h-5 text-gray-400 hidden sm:block" />
-                    <input 
-                      type="date" 
-                      value={scheduleDate}
-                      onChange={(e) => setScheduleDate(e.target.value)}
-                      className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none flex-1 sm:flex-none"
-                    />
-                    <input 
-                      type="time" 
-                      value={scheduleTime}
-                      onChange={(e) => setScheduleTime(e.target.value)}
-                      className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none flex-1 sm:flex-none"
-                    />
-                    <select
-                      value={timezone}
-                      onChange={(e) => setTimezone(e.target.value)}
-                      className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none flex-1 sm:flex-none"
-                    >
-                      {Intl.supportedValuesOf('timeZone').map(tz => (
-                        <option key={tz} value={tz}>{tz}</option>
-                      ))}
-                    </select>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <Clock className="w-5 h-5 text-gray-400 hidden sm:block" />
+                      <input 
+                        type="date" 
+                        value={scheduleDate}
+                        onChange={(e) => setScheduleDate(e.target.value)}
+                        className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none flex-1 sm:flex-none"
+                      />
+                      <input 
+                        type="time" 
+                        value={scheduleTime}
+                        onChange={(e) => setScheduleTime(e.target.value)}
+                        className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none flex-1 sm:flex-none"
+                      />
+                      <select
+                        value={timezone}
+                        onChange={(e) => setTimezone(e.target.value)}
+                        className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none flex-1 sm:flex-none"
+                      >
+                        {Intl.supportedValuesOf('timeZone').map(tz => (
+                          <option key={tz} value={tz}>{tz}</option>
+                        ))}
+                      </select>
+                    </div>
+                    {suggestedTime && (
+                      <div className="flex items-center gap-2 text-xs text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-md w-fit">
+                        <Sparkles className="w-3 h-3" />
+                        <span>Suggested: <strong>{suggestedTime}</strong></span>
+                        <span className="text-indigo-400 mx-1">•</span>
+                        <span className="text-indigo-500/80" title={suggestedTimeReason || ''}>{suggestedTimeReason}</span>
+                        <button
+                          onClick={() => setScheduleTime(suggestedTime)}
+                          className="ml-2 font-medium hover:underline"
+                        >
+                          Apply
+                        </button>
+                      </div>
+                    )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                   <button 
@@ -2433,6 +3681,14 @@ Please write a short, engaging reply to the following user comment:
                   >
                     <Megaphone className="w-4 h-4 sm:mr-2" />
                     <span className="hidden sm:inline">Publish</span>
+                  </button>
+                  <button 
+                    onClick={() => handleSchedule('pending_approval')}
+                    disabled={isSubmitting}
+                    className="flex-1 sm:flex-none bg-amber-50 border border-amber-200 hover:bg-amber-100 text-amber-700 px-4 py-2.5 rounded-lg font-medium flex items-center justify-center transition-colors shadow-sm disabled:opacity-50"
+                  >
+                    <Clock className="w-4 h-4 sm:mr-2" />
+                    <span className="hidden sm:inline">Approval</span>
                   </button>
                   <button 
                     onClick={() => handleSchedule('scheduled')}
@@ -2464,6 +3720,12 @@ Please write a short, engaging reply to the following user comment:
                   className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardTab === 'scheduled' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                 >
                   Scheduled
+                </button>
+                <button 
+                  onClick={() => setDashboardTab('pending_approval')}
+                  className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${dashboardTab === 'pending_approval' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  Pending
                 </button>
                 <button 
                   onClick={() => setDashboardTab('published')}
@@ -2536,7 +3798,12 @@ Please write a short, engaging reply to the following user comment:
                     })()}
                   </div>
                 </div>
-              ) : posts.filter(p => dashboardTab === 'drafts' ? p.status === 'draft' : dashboardTab === 'published' ? p.status === 'published' : p.status === 'scheduled').length === 0 ? (
+              ) : posts.filter(p => 
+                dashboardTab === 'drafts' ? p.status === 'draft' : 
+                dashboardTab === 'published' ? p.status === 'published' : 
+                dashboardTab === 'pending_approval' ? p.status === 'pending_approval' :
+                p.status === 'scheduled'
+              ).length === 0 ? (
                 <EmptyState 
                   icon={Calendar} 
                   title={`No ${dashboardTab} posts`} 
@@ -2545,7 +3812,12 @@ Please write a short, engaging reply to the following user comment:
               ) : (
                   <div>
                     {renderBulkActions()}
-                    {posts.filter(p => dashboardTab === 'drafts' ? p.status === 'draft' : dashboardTab === 'published' ? p.status === 'published' : p.status === 'scheduled').map(post => (
+                    {posts.filter(p => 
+                      dashboardTab === 'drafts' ? p.status === 'draft' : 
+                      dashboardTab === 'published' ? p.status === 'published' : 
+                      dashboardTab === 'pending_approval' ? p.status === 'pending_approval' :
+                      p.status === 'scheduled'
+                    ).map(post => (
                     <div key={post.id} className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 flex flex-col sm:flex-row gap-4 hover:shadow-md transition-shadow">
                       <div className="flex items-center">
                         <input 
@@ -2580,10 +3852,12 @@ Please write a short, engaging reply to the following user comment:
                           const config = platformConfig[p];
                           const Icon = config.icon;
                           return (
-                            <div key={p} className="flex items-center gap-1" title={config.name}>
-                              <div className={`${config.color} w-6 h-6 rounded-full flex items-center justify-center text-white`}>
-                                <Icon className="w-3 h-3" />
-                              </div>
+                            <div key={p} className="flex items-center gap-1">
+                              <Tooltip text={config.name}>
+                                <div className={`${config.color} w-6 h-6 rounded-full flex items-center justify-center text-white cursor-help`}>
+                                  <Icon className="w-3 h-3" />
+                                </div>
+                              </Tooltip>
                               <span className="text-xs text-gray-500">{config.name}</span>
                             </div>
                           );
@@ -2597,23 +3871,37 @@ Please write a short, engaging reply to the following user comment:
                     </div>
                     <div className="sm:text-right flex flex-col justify-between items-end">
                       <div className="flex items-center space-x-2 mb-2 sm:mb-0">
-                        <select
-                          value={post.status}
-                          onChange={(e) => updatePostStatus(post, e.target.value as ScheduledPost['status'])}
-                          className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border-none cursor-pointer ${
-                            post.status === 'published' ? 'bg-green-100 text-green-800' : 
-                            post.status === 'draft' ? 'bg-gray-100 text-gray-800' : 
-                            post.status === 'pending_approval' ? 'bg-blue-100 text-blue-800' :
-                            'bg-amber-100 text-amber-800'
-                          }`}
-                        >
-                          <option value="draft">Draft</option>
-                          <option value="pending_approval">Pending Approval</option>
-                          <option value="scheduled">Scheduled</option>
-                          <option value="published">Published</option>
-                          <option value="failed">Failed</option>
-                        </select>
-                        {post.status !== 'published' && (
+                        {(userRole === 'admin' || userRole === 'editor') ? (
+                          <select
+                            value={post.status}
+                            onChange={(e) => updatePostStatus(post, e.target.value as ScheduledPost['status'])}
+                            className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border-none cursor-pointer ${
+                              post.status === 'published' ? 'bg-green-100 text-green-800' : 
+                              post.status === 'draft' ? 'bg-gray-100 text-gray-800' : 
+                              post.status === 'pending_approval' ? 'bg-blue-100 text-blue-800' :
+                              'bg-amber-100 text-amber-800'
+                            }`}
+                          >
+                            <option value="draft">Draft</option>
+                            <option value="pending_approval">Pending Approval</option>
+                            <option value="scheduled">Scheduled</option>
+                            <option value="published">Published</option>
+                            <option value="failed">Failed</option>
+                          </select>
+                        ) : (
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                            {post.status}
+                          </span>
+                        )}
+                        {post.status === 'pending_approval' && (userRole === 'admin') && (
+                          <button 
+                            onClick={() => updatePostStatus(post, 'scheduled')}
+                            className="text-green-600 hover:text-green-800 text-xs font-medium bg-green-50 hover:bg-green-100 px-2 py-1 rounded transition-colors"
+                          >
+                            Approve
+                          </button>
+                        )}
+                        {post.status !== 'published' && (userRole === 'admin' || userRole === 'editor') && (
                           <button 
                             onClick={() => handleMarkAsPublished(post.id)} 
                             className="text-indigo-600 hover:text-indigo-800 text-xs font-medium bg-indigo-50 hover:bg-indigo-100 px-2 py-1 rounded transition-colors"
@@ -2644,10 +3932,19 @@ Please write a short, engaging reply to the following user comment:
           )}
         </div>
       </section>
-    </>
-    ) : activeTab === 'calendar' ? (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 h-[600px]">
-            <h2 className="text-xl font-display font-semibold text-gray-800 mb-6">Content Calendar</h2>
+        </>
+        ) : activeTab === 'calendar' ? (
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 h-[600px]">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-display font-semibold text-gray-800 dark:text-gray-100">Content Calendar</h2>
+              <button 
+                onClick={() => setIsCalendarGeneratorOpen(true)}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl text-sm font-medium flex items-center transition-colors shadow-sm"
+              >
+                <Sparkles className="w-4 h-4 mr-2" />
+                Generate with AI
+              </button>
+            </div>
             <BigCalendar
               localizer={localizer}
               events={posts.filter(p => p.scheduledFor).map(post => ({
@@ -2665,84 +3962,211 @@ Please write a short, engaging reply to the following user comment:
         ) : activeTab === 'media' ? (
           <MediaLibrary workspaceId={activeWorkspace} />
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            {/* Inbox Column */}
-            <div className="lg:col-span-2 space-y-4">
-              <h2 className="text-lg font-display font-semibold text-gray-800 mb-4">Incoming Comments</h2>
-              {isLoadingComments ? (
-                <div className="space-y-4">
-                  <Skeleton className="h-24 w-full" />
-                  <Skeleton className="h-24 w-full" />
-                  <Skeleton className="h-24 w-full" />
-                </div>
-              ) : comments.length === 0 ? (
-                <EmptyState 
-                  icon={MessageCircle} 
-                  title="Inbox is zero!" 
-                  description="You're all caught up. No new comments to review."
-                />
-              ) : (
-                comments.map(comment => {
-                    const config = platformConfig[comment.platform];
-                    const Icon = config?.icon || MessageCircle;
-                    return (
-                      <div key={comment.id} className="bg-white p-5 rounded-2xl shadow-sm border border-gray-200">
-                        <div className="flex items-start justify-between mb-3">
-                          <div className="flex items-center">
-                            <div className={`${config?.color || 'bg-gray-500'} w-8 h-8 rounded-full flex items-center justify-center text-white mr-3`}>
-                              <Icon className="w-4 h-4" />
-                            </div>
-                            <div>
-                              <p className="font-semibold text-gray-900">{comment.author}</p>
-                              <p className="text-xs text-gray-500">{new Date(comment.timestamp).toLocaleString()}</p>
-                            </div>
-                          </div>
-                          {comment.status === 'replied' && (
-                            <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-green-100 text-green-800 text-xs font-medium">
-                              Replied
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-gray-800 mb-4">{comment.text}</p>
-                        
-                        {comment.status === 'pending' && (
-                          <div className="flex gap-2">
-                            <input 
-                              type="text" 
-                              placeholder="Type a manual reply..." 
-                              className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' && e.currentTarget.value) {
-                                  handleReplyToComment(comment.id, e.currentTarget.value);
-                                }
-                              }}
-                            />
-                            <button 
-                              onClick={() => generateAIReply(comment.id, comment.text)}
-                              disabled={replyingToCommentId === comment.id}
-                              className="bg-purple-100 hover:bg-purple-200 text-purple-700 px-4 py-2 rounded-lg text-sm font-medium flex items-center transition-colors disabled:opacity-50"
-                            >
-                              {replyingToCommentId === comment.id ? (
-                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                              ) : (
-                                <Sparkles className="w-4 h-4 mr-2" />
-                              )}
-                              AI Reply
-                            </button>
-                          </div>
-                        )}
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-2xl font-display font-bold text-gray-900 dark:text-gray-100">Engagement Center</h1>
+                <p className="text-gray-500 dark:text-gray-400">Manage your community and track industry trends.</p>
+              </div>
+              <div className="flex bg-gray-100 dark:bg-gray-700 p-1 rounded-lg">
+                <button 
+                  onClick={() => setEngagementTab('inbox')}
+                  className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${engagementTab === 'inbox' ? 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
+                >
+                  Unified Inbox
+                </button>
+                <button 
+                  onClick={() => setEngagementTab('listening')}
+                  className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${engagementTab === 'listening' ? 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
+                >
+                  Social Listening
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* Main Content Column */}
+              <div className="lg:col-span-2 space-y-4">
+                {engagementTab === 'inbox' ? (
+                  <>
+                    <h2 className="text-lg font-display font-semibold text-gray-800 dark:text-gray-100 mb-4">Incoming Comments</h2>
+                    {isLoadingComments ? (
+                      <div className="space-y-4">
+                        <Skeleton className="h-24 w-full" />
+                        <Skeleton className="h-24 w-full" />
+                        <Skeleton className="h-24 w-full" />
                       </div>
-                    );
-                  })
+                    ) : comments.length === 0 ? (
+                      <EmptyState 
+                        icon={MessageCircle} 
+                        title="Inbox is zero!" 
+                        description="You're all caught up. No new comments to review."
+                      />
+                    ) : (
+                      comments.map(comment => {
+                          const config = platformConfig[comment.platform];
+                          const Icon = config?.icon || MessageCircle;
+                          return (
+                            <div key={comment.id} className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700">
+                              <div className="flex items-start justify-between mb-3">
+                                <div className="flex items-center">
+                                  <Tooltip text={config?.name || 'Unknown Platform'}>
+                                    <div className={`${config?.color || 'bg-gray-500'} w-8 h-8 rounded-full flex items-center justify-center text-white mr-3 cursor-help`}>
+                                      <Icon className="w-4 h-4" />
+                                    </div>
+                                  </Tooltip>
+                                  <div>
+                                    <p className="font-semibold text-gray-900 dark:text-gray-100">{comment.author}</p>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400">{new Date(comment.timestamp).toLocaleString()}</p>
+                                  </div>
+                                </div>
+                                {comment.status === 'replied' && (
+                                  <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 text-xs font-medium">
+                                    Replied
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-gray-800 dark:text-gray-200 mb-4">{comment.text}</p>
+                              
+                              {comment.status === 'pending' && (
+                                <div className="flex flex-col gap-2">
+                                  {!n8nWebhookUrl && (
+                                    <p className="text-xs text-amber-600 dark:text-amber-400 mb-1 flex items-center">
+                                      <AlertCircle className="w-3 h-3 mr-1" />
+                                      Note: Without an n8n webhook configured, replies will only be marked as replied locally.
+                                    </p>
+                                  )}
+                                  <div className="flex gap-2">
+                                    <input 
+                                      type="text" 
+                                      placeholder="Type a manual reply..." 
+                                      className="flex-1 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && e.currentTarget.value) {
+                                          handleReplyToComment(comment.id, e.currentTarget.value);
+                                        }
+                                      }}
+                                    />
+                                    <button 
+                                      onClick={() => generateAIReply(comment.id, comment.text)}
+                                      disabled={replyingToCommentId === comment.id}
+                                      className="bg-purple-100 dark:bg-purple-900/30 hover:bg-purple-200 dark:hover:bg-purple-900/50 text-purple-700 dark:text-purple-300 px-4 py-2 rounded-lg text-sm font-medium flex items-center transition-colors disabled:opacity-50"
+                                    >
+                                      {replyingToCommentId === comment.id ? (
+                                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                      ) : (
+                                        <Sparkles className="w-4 h-4 mr-2" />
+                                      )}
+                                      AI Reply
+                                    </button>
+                                  </div>
+                                  {replySuggestions[comment.id] && replySuggestions[comment.id].length > 0 && (
+                                    <div className="flex flex-col gap-2 mt-2">
+                                      <span className="text-xs font-medium text-gray-500 dark:text-gray-400">AI Suggestions:</span>
+                                      <div className="flex flex-wrap gap-2">
+                                        {replySuggestions[comment.id].map((suggestion, idx) => (
+                                          <button
+                                            key={idx}
+                                            onClick={() => {
+                                              handleReplyToComment(comment.id, suggestion);
+                                              setReplySuggestions(prev => {
+                                                const newSugs = { ...prev };
+                                                delete newSugs[comment.id];
+                                                return newSugs;
+                                              });
+                                            }}
+                                            className="text-left text-sm bg-white dark:bg-gray-800 border border-purple-200 dark:border-purple-800 hover:border-purple-400 dark:hover:border-purple-600 text-gray-700 dark:text-gray-300 px-3 py-2 rounded-lg transition-colors"
+                                          >
+                                            {suggestion}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between mb-4">
+                      <h2 className="text-lg font-display font-semibold text-gray-800">Industry Mentions</h2>
+                      <button 
+                        onClick={fetchMentions}
+                        disabled={isFetchingMentions || monitoredKeywords.length === 0}
+                        className="flex items-center px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 transition-colors shadow-sm disabled:opacity-50"
+                      >
+                        {isFetchingMentions ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Sparkles className="w-4 h-4 mr-2" />}
+                        Discover Trends
+                      </button>
+                    </div>
+
+                    {monitoredKeywords.length === 0 ? (
+                      <EmptyState 
+                        icon={Megaphone} 
+                        title="No keywords tracked" 
+                        description="Add keywords in Settings to start monitoring industry trends and brand mentions."
+                      />
+                    ) : mentions.length === 0 ? (
+                      <div className="bg-white dark:bg-gray-800 p-12 rounded-2xl border border-gray-200 dark:border-gray-700 text-center">
+                        <div className="bg-indigo-50 dark:bg-indigo-900/30 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                          <Sparkles className="w-8 h-8 text-indigo-600 dark:text-indigo-400" />
+                        </div>
+                        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Ready to listen?</h3>
+                        <p className="text-gray-500 dark:text-gray-400 max-w-sm mx-auto mb-6">Click "Discover Trends" to use AI to find and analyze recent mentions of your tracked keywords across the web.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {mentions.map((mention, i) => (
+                          <div key={i} className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 hover:border-indigo-300 dark:hover:border-indigo-500 transition-colors">
+                            <div className="flex items-center justify-between mb-3">
+                              <div className="flex items-center">
+                                <div className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center mr-3">
+                                  {mention.platform === 'twitter' ? <Twitter className="w-4 h-4 text-blue-400" /> : <ImageIcon className="w-4 h-4 text-gray-400 dark:text-gray-500" />}
+                                </div>
+                                <div>
+                                  <p className="font-semibold text-gray-900 dark:text-gray-100">@{mention.author}</p>
+                                  <p className="text-xs text-gray-500 dark:text-gray-400">{mention.timestamp}</p>
+                                </div>
+                              </div>
+                              <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${
+                                mention.sentiment === 'positive' ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400' :
+                                mention.sentiment === 'negative' ? 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400' :
+                                'bg-gray-50 dark:bg-gray-700 text-gray-700 dark:text-gray-400'
+                              }`}>
+                                {mention.sentiment}
+                              </span>
+                            </div>
+                            <p className="text-gray-800 dark:text-gray-200 mb-4">{mention.text}</p>
+                            <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
+                              <span className="flex items-center gap-1"><ThumbsUp className="w-3 h-3" /> {mention.engagement}</span>
+                              <button 
+                                onClick={() => {
+                                  setContent(`Replying to @${mention.author}: ${mention.text}\n\n`);
+                                  setActiveTab('dashboard');
+                                }}
+                                className="text-indigo-600 dark:text-indigo-400 font-medium hover:underline"
+                              >
+                                Draft Response
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 
               {/* Automation Settings Column */}
               <div className="space-y-6">
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
+                <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700">
                   <div className="flex items-center justify-between mb-6">
-                    <h2 className="text-lg font-display font-semibold text-gray-800 flex items-center">
-                      <Bot className="w-5 h-5 mr-2 text-indigo-600" />
+                    <h2 className="text-lg font-display font-semibold text-gray-800 dark:text-gray-100 flex items-center">
+                      <Bot className="w-5 h-5 mr-2 text-indigo-600 dark:text-indigo-400" />
                       Auto-Reply AI
                     </h2>
                     <label className="relative inline-flex items-center cursor-pointer">
@@ -2758,6 +4182,9 @@ Please write a short, engaging reply to the following user comment:
                               workspaceId: activeWorkspace,
                               autoReplyEnabled: newValue,
                               aiPersona,
+                              brandPersonality,
+                              brandValues,
+                              brandTargetAudience,
                               ghlApiKey,
                               ghlLocationId,
                               connectedPlatforms,
@@ -2795,8 +4222,101 @@ Please write a short, engaging reply to the following user comment:
                     </button>
                   </div>
                 </div>
+
+                <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
+                  <h2 className="text-lg font-display font-semibold text-gray-800 flex items-center mb-6">
+                    <Sparkles className="w-5 h-5 mr-2 text-indigo-600" />
+                    Brand Kit & Content Strategy
+                  </h2>
+                  <p className="text-sm text-gray-600 mb-6">
+                    Define your brand's identity to ensure all AI-generated content remains consistent and aligned with your strategy.
+                  </p>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Brand Personality</label>
+                      <textarea
+                        value={brandPersonality}
+                        onChange={(e) => setBrandPersonality(e.target.value)}
+                        placeholder="e.g., Professional yet witty, authoritative but approachable, bold and energetic..."
+                        className="w-full h-24 p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Core Values & Mission</label>
+                      <textarea
+                        value={brandValues}
+                        onChange={(e) => setBrandValues(e.target.value)}
+                        placeholder="e.g., Sustainability, innovation, customer-first, transparency..."
+                        className="w-full h-24 p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Target Audience</label>
+                      <textarea
+                        value={brandTargetAudience}
+                        onChange={(e) => setBrandTargetAudience(e.target.value)}
+                        placeholder="e.g., Tech-savvy millennials, small business owners, fitness enthusiasts aged 25-40..."
+                        className="w-full h-24 p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none text-sm"
+                      />
+                    </div>
+                    <button 
+                      onClick={saveAutomationSettings}
+                      disabled={isSavingPersona}
+                      className="w-full bg-gray-900 hover:bg-black text-white px-4 py-2.5 rounded-lg font-medium flex items-center justify-center transition-colors disabled:opacity-50"
+                    >
+                      {isSavingPersona ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : 'Save Brand Kit'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
+                  <h2 className="text-lg font-display font-semibold text-gray-800 flex items-center mb-6">
+                    <Megaphone className="w-5 h-5 mr-2 text-indigo-600" />
+                    Social Listening Keywords
+                  </h2>
+                  <p className="text-sm text-gray-600 mb-4">
+                    Track mentions of your brand, competitors, or industry keywords across social media.
+                  </p>
+                  <div className="space-y-4">
+                    <div className="flex gap-2">
+                      <input 
+                        type="text"
+                        placeholder="Add keyword (e.g. #SocialSync, @competitor)"
+                        className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && e.currentTarget.value) {
+                            const val = e.currentTarget.value.trim();
+                            if (val && !monitoredKeywords.includes(val)) {
+                              setMonitoredKeywords(prev => [...prev, val]);
+                              e.currentTarget.value = '';
+                            }
+                          }
+                        }}
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {monitoredKeywords.map(kw => (
+                        <span key={kw} className="inline-flex items-center px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 text-xs font-medium border border-indigo-100">
+                          {kw}
+                          <button onClick={() => setMonitoredKeywords(prev => prev.filter(k => k !== kw))} className="ml-1.5 hover:text-indigo-900">
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                    <button 
+                      onClick={saveAutomationSettings}
+                      disabled={isSavingPersona}
+                      className="w-full bg-gray-900 hover:bg-black text-white px-4 py-2.5 rounded-lg font-medium flex items-center justify-center transition-colors disabled:opacity-50"
+                    >
+                      {isSavingPersona ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : 'Save Keywords'}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
+          </div>
           )}
         </div>
       </main>
