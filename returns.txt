@@ -1,0 +1,81 @@
+154:  return (
+176:    return unsubscribe;
+180:    if (!file.type.startsWith('image/')) return file;
+182:    return new Promise((resolve) => {
+207:    if (!e.target.files || e.target.files.length === 0) return;
+249:    return matchesSearch && matchesDate;
+252:  return (
+450:    return saved ? JSON.parse(saved) : false;
+472:    if (!selectedPostIds || selectedPostIds.length === 0) return null;
+473:    return (
+492:    return () => document.removeEventListener('mousedown', handleClickOutside);
+505:    if (!auth.currentUser) return;
+510:    return () => unsubscribe();
+516:      return;
+526:    return () => unsubscribe();
+569:        return;
+631:    return () => clearTimeout(timeoutId);
+679:    return () => clearInterval(interval);
+691:    if (!newWorkspaceName.trim() || !user) return;
+708:    if (!activeWorkspace) return;
+732:    if (files.length === 0) return;
+781:    if (post.status !== 'published' || !post.postMediaAssets) return;
+787:    if (!oauthData || !oauthData.accessToken) return;
+812:    if (!postToDelete) return;
+899:          return;
+925:          return;
+955:    if (!content.trim()) return;
+984:    if (!content.trim()) return;
+1027:          return;
+1051:          return;
+1085:      return;
+1089:      return;
+1106:        throw new Error('No image URL returned');
+1119:      return;
+1144:    if (!activeWorkspace || !user) return;
+1159:    if (!repurposeSource.trim() || !activeWorkspace || !user) return;
+1219:    return () => unsubscribe();
+1227:      return;
+1269:    if (!isAuthReady || !user || !activeWorkspace) return;
+1355:    return () => {
+1366:    if (posts.length === 0) return;
+1393:    return Object.entries(hashtagStats)
+1404:    if (!content && postMediaAssets.length === 0) return;
+1408:    return () => clearTimeout(timer);
+1412:    if (!newCompetitorHandle.trim()) return;
+1469:    if (relevantPosts.length === 0) return '12:00';
+1490:    return `${String(bestHour).padStart(2, '0')}:00`;
+1496:      return;
+1501:      return;
+1534:        return; // Stop execution if we can't save to DB
+1554:              return { platform, success: true };
+1557:              return { platform, success: false, error: e };
+1560:          return { platform, success: false, error: 'No native connection' };
+1587:              errorData = { message: `Server returned ${response.status}` };
+1599:              return; // Don't clear form if they want to fix it
+1613:          return; // Don't clear form so user can retry
+1662:      if (!comment) return;
+1671:        return;
+1741:          return;
+1765:          return;
+1847:          return;
+1870:          return;
+1905:    if (!activeWorkspace || !auth.currentUser) return;
+1968:          return;
+1991:          return;
+2027:    if (monitoredKeywords.length === 0) return;
+2159:    return () => window.removeEventListener('message', handleMessage);
+2177:    return (
+2185:    return (
+2204:  return (
+2488:                          return (
+2560:                              return (
+2622:                  return (
+2875:                    return (
+3006:                        return bestHour === -1 ? 'N/A' : `${bestHour}:00`;
+3046:                            return acc;
+3512:                    return (
+4012:                      return days;
+4069:                          return (
+4243:                          return (
+4309:                                                return newSugs;

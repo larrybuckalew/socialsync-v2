@@ -1,0 +1,16 @@
+[Unit]
+Description=SocialSync - Social Media Command Center
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/socialsync.aisetuppros.com
+Environment=NODE_ENV=production
+Environment=PORT=3457
+ExecStart=/bin/bash /var/www/socialsync.aisetuppros.com/start.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

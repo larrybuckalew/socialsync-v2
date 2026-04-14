@@ -1,0 +1,274 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    // Collection: workspaces
+    //   - name: string (required, max 100 chars)
+    //   - ownerId: string (required, immutable)
+    //   - createdAt: timestamp (required, immutable)
+    //
+    // Collection: posts
+    //   - workspaceId: string (required, immutable)
+    //   - content: string (required, max 2000 chars)
+    //   - platforms: list (required, max 20 items)
+    //   - scheduledFor: string (required)
+    //   - status: string (required, in ['scheduled', 'published', 'failed'])
+    //   - createdAt: timestamp (required, immutable)
+    //
+    // Collection: comments
+    //   - workspaceId: string (required, immutable)
+    //   - platform: string (required, max 50 chars)
+    //   - author: string (required, max 100 chars)
+    //   - text: string (required, max 2000 chars)
+    //   - status: string (required, in ['pending', 'replied'])
+    //   - timestamp: string (required)
+    //
+    // Collection: automationSettings
+    //   - workspaceId: string (required, immutable)
+    //   - autoReplyEnabled: boolean (required)
+    //   - aiPersona: string (required, max 2000 chars)
+    //   - ghlApiKey: string (optional, max 500 chars)
+    //   - ghlLocationId: string (optional, max 100 chars)
+    //   - updatedAt: timestamp (required)
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isWorkspaceOwner(workspaceId) {
+      let ws = workspaceId is string ? get(/databases/$(database)/documents/workspaces/$(workspaceId)) : null;
+      return isAuthenticated() && ws != null && ws.data.ownerId == request.auth.uid;
+    }
+
+    function getWorkspaceRole(workspaceId) {
+      let ws = workspaceId is string ? get(/databases/$(database)/documents/workspaces/$(workspaceId)) : null;
+      return (ws != null && 'members' in ws.data && request.auth.uid in ws.data.members) ? ws.data.members[request.auth.uid] : null;
+    }
+
+    function isWorkspaceAdmin(workspaceId) {
+      return isWorkspaceOwner(workspaceId) || getWorkspaceRole(workspaceId) == 'admin';
+    }
+
+    function isWorkspaceEditor(workspaceId) {
+      return isWorkspaceAdmin(workspaceId) || getWorkspaceRole(workspaceId) == 'editor';
+    }
+
+    function isWorkspaceViewer(workspaceId) {
+      return isWorkspaceEditor(workspaceId) || getWorkspaceRole(workspaceId) == 'viewer';
+    }
+
+    function isCreatingWorkspaceOwner(workspaceId) {
+      let ws = workspaceId is string ? get(/databases/$(database)/documents/workspaces/$(workspaceId)) : null;
+      return isAuthenticated() && 
+             request.resource.data.workspaceId == workspaceId &&
+             ws != null && ws.data.ownerId == request.auth.uid;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    
+    function isValidWorkspace() {
+      let hasMembers = 'members' in request.resource.data;
+      let finalFields = hasMembers ? ['name', 'ownerId', 'createdAt', 'members'] : ['name', 'ownerId', 'createdAt'];
+      return hasOnlyAllowedFields(finalFields) &&
+             request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 100 &&
+             request.resource.data.ownerId == request.auth.uid &&
+             request.resource.data.createdAt is string &&
+             (!hasMembers || request.resource.data.members is map);
+    }
+
+    function isValidPost() {
+      let hasMediaUrls = 'mediaUrls' in request.resource.data;
+      let hasTimezone = 'timezone' in request.resource.data;
+      let hasScheduledFor = 'scheduledFor' in request.resource.data;
+      let hasIsReel = 'isReel' in request.resource.data;
+      let hasOwnerId = 'ownerId' in request.resource.data;
+      
+      let baseFields = ['workspaceId', 'content', 'platforms', 'status', 'createdAt'];
+      let fields1 = hasMediaUrls ? baseFields.concat(['mediaUrls']) : baseFields;
+      let fields2 = hasTimezone ? fields1.concat(['timezone']) : fields1;
+      let fields3 = hasScheduledFor ? fields2.concat(['scheduledFor']) : fields2;
+      let fields4 = hasIsReel ? fields3.concat(['isReel']) : fields3;
+      let finalFields = hasOwnerId ? fields4.concat(['ownerId']) : fields4;
+
+      return hasOnlyAllowedFields(finalFields) &&
+             request.resource.data.workspaceId is string &&
+             request.resource.data.content is string && request.resource.data.content.size() <= 2000 &&
+             request.resource.data.platforms is list && request.resource.data.platforms.size() <= 20 &&
+             (!hasScheduledFor || request.resource.data.scheduledFor == null || (request.resource.data.scheduledFor is string && request.resource.data.scheduledFor.size() <= 100)) &&
+             request.resource.data.status in ['scheduled', 'published', 'failed', 'draft', 'pending_approval'] &&
+             (!hasMediaUrls || (request.resource.data.mediaUrls is list && request.resource.data.mediaUrls.size() <= 10)) &&
+             (!hasTimezone || (request.resource.data.timezone is string && request.resource.data.timezone.size() <= 100)) &&
+             (!hasIsReel || request.resource.data.isReel is bool) &&
+             (!hasOwnerId || (request.resource.data.ownerId is string && request.resource.data.ownerId == request.auth.uid)) &&
+             request.resource.data.createdAt is string;
+    }
+
+    function isValidComment() {
+      let hasOwnerId = 'ownerId' in request.resource.data;
+      let baseFields = ['workspaceId', 'platform', 'author', 'text', 'status', 'timestamp'];
+      let finalFields = hasOwnerId ? baseFields.concat(['ownerId']) : baseFields;
+
+      return hasOnlyAllowedFields(finalFields) &&
+             request.resource.data.workspaceId is string &&
+             request.resource.data.platform is string && request.resource.data.platform.size() <= 50 &&
+             request.resource.data.author is string && request.resource.data.author.size() <= 100 &&
+             request.resource.data.text is string && request.resource.data.text.size() <= 2000 &&
+             request.resource.data.status in ['pending', 'replied'] &&
+             (!hasOwnerId || (request.resource.data.ownerId is string && request.resource.data.ownerId == request.auth.uid)) &&
+             request.resource.data.timestamp is string && request.resource.data.timestamp.size() <= 100;
+    }
+
+    function isValidAutomationSettings() {
+      let hasGhlApiKey = 'ghlApiKey' in request.resource.data;
+      let hasGhlLocationId = 'ghlLocationId' in request.resource.data;
+      let hasConnectedPlatforms = 'connectedPlatforms' in request.resource.data;
+      let hasOauthConnections = 'oauthConnections' in request.resource.data;
+      
+      let baseFields = ['workspaceId', 'autoReplyEnabled', 'aiPersona', 'updatedAt'];
+      let fields1 = hasGhlApiKey ? baseFields.concat(['ghlApiKey']) : baseFields;
+      let fields2 = hasGhlLocationId ? fields1.concat(['ghlLocationId']) : fields1;
+      let fields3 = hasConnectedPlatforms ? fields2.concat(['connectedPlatforms']) : fields2;
+      let finalFields = hasOauthConnections ? fields3.concat(['oauthConnections']) : fields3;
+
+      return hasOnlyAllowedFields(finalFields) &&
+             request.resource.data.workspaceId is string &&
+             request.resource.data.autoReplyEnabled is bool &&
+             request.resource.data.aiPersona is string && request.resource.data.aiPersona.size() <= 2000 &&
+             request.resource.data.updatedAt is string &&
+             (!hasGhlApiKey || (request.resource.data.ghlApiKey is string && request.resource.data.ghlApiKey.size() <= 500)) &&
+             (!hasGhlLocationId || (request.resource.data.ghlLocationId is string && request.resource.data.ghlLocationId.size() <= 100)) &&
+             (!hasConnectedPlatforms || (request.resource.data.connectedPlatforms is list && request.resource.data.connectedPlatforms.size() <= 20)) &&
+             (!hasOauthConnections || request.resource.data.oauthConnections is map);
+    }
+
+    function isValidApiKey() {
+      return hasOnlyAllowedFields(['workspaceId', 'key', 'createdAt', 'name']) &&
+             request.resource.data.workspaceId is string &&
+             request.resource.data.key is string && request.resource.data.key.size() <= 200 &&
+             request.resource.data.createdAt is string &&
+             request.resource.data.name is string && request.resource.data.name.size() <= 100;
+    }
+
+    function isValidMediaAsset() {
+      return hasOnlyAllowedFields(['workspaceId', 'url', 'name', 'createdAt', 'tags']) &&
+             request.resource.data.workspaceId is string &&
+             request.resource.data.url is string && request.resource.data.url.size() <= 2000 &&
+             request.resource.data.name is string && request.resource.data.name.size() <= 200 &&
+             (!('tags' in request.resource.data) || request.resource.data.tags is list) &&
+             request.resource.data.createdAt is string;
+    }
+
+    function isValidCompetitor() {
+      return hasOnlyAllowedFields(['workspaceId', 'handle', 'platform', 'metrics', 'createdAt']) &&
+             request.resource.data.workspaceId is string &&
+             request.resource.data.handle is string && request.resource.data.handle.size() <= 100 &&
+             request.resource.data.platform is string && request.resource.data.platform.size() <= 50 &&
+             request.resource.data.metrics is map &&
+             request.resource.data.createdAt is string;
+    }
+
+    function isValidNotification() {
+      return hasOnlyAllowedFields(['userId', 'message', 'read', 'createdAt']) &&
+             request.resource.data.userId is string &&
+             request.resource.data.message is string && request.resource.data.message.size() <= 1000 &&
+             request.resource.data.read is bool &&
+             request.resource.data.createdAt is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /workspaces/{workspaceId} {
+      allow read: if isAuthenticated() && (resource.data.ownerId == request.auth.uid || (resource.data.members != null && request.auth.uid in resource.data.members));
+      allow create: if isAuthenticated() && isValidWorkspace();
+      allow update: if isAuthenticated() && isWorkspaceAdmin(workspaceId) && 
+                       isValidWorkspace() &&
+                       request.resource.data.ownerId == resource.data.ownerId &&
+                       request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isAuthenticated() && isWorkspaceOwner(workspaceId);
+    }
+
+    match /posts/{postId} {
+      allow read: if isAuthenticated() && isWorkspaceViewer(resource.data.workspaceId);
+      allow create: if isAuthenticated() && isValidPost() && isWorkspaceEditor(request.resource.data.workspaceId) &&
+                       (isWorkspaceAdmin(request.resource.data.workspaceId) || request.resource.data.status in ['draft', 'pending_approval']);
+      allow update: if isAuthenticated() && isWorkspaceEditor(resource.data.workspaceId) &&
+                       isValidPost() &&
+                       request.resource.data.workspaceId == resource.data.workspaceId &&
+                       request.resource.data.createdAt == resource.data.createdAt &&
+                       (isWorkspaceAdmin(resource.data.workspaceId) || request.resource.data.status in ['draft', 'pending_approval']);
+      allow delete: if isAuthenticated() && isWorkspaceEditor(resource.data.workspaceId);
+    }
+
+    match /comments/{commentId} {
+      allow read: if isAuthenticated() && isWorkspaceViewer(resource.data.workspaceId);
+      allow create: if isAuthenticated() && isValidComment() && isWorkspaceEditor(request.resource.data.workspaceId);
+      allow update: if isAuthenticated() && isWorkspaceEditor(resource.data.workspaceId) &&
+                       isValidComment() &&
+                       request.resource.data.workspaceId == resource.data.workspaceId;
+      allow delete: if isAuthenticated() && isWorkspaceEditor(resource.data.workspaceId);
+    }
+
+    match /automationSettings/{workspaceId} {
+      allow read: if isAuthenticated() && isWorkspaceViewer(workspaceId);
+      allow create: if isAuthenticated() && isValidAutomationSettings() && isWorkspaceAdmin(workspaceId);
+      allow update: if isAuthenticated() && isWorkspaceAdmin(workspaceId) &&
+                       isValidAutomationSettings() &&
+                       request.resource.data.workspaceId == workspaceId;
+      allow delete: if isAuthenticated() && isWorkspaceAdmin(workspaceId);
+    }
+
+    match /apiKeys/{apiKeyId} {
+      allow read: if isAuthenticated() && isWorkspaceAdmin(resource.data.workspaceId);
+      allow create: if isAuthenticated() && isValidApiKey() && isWorkspaceAdmin(request.resource.data.workspaceId);
+      allow delete: if isAuthenticated() && isWorkspaceAdmin(resource.data.workspaceId);
+    }
+
+    match /mediaAssets/{assetId} {
+      allow read: if isAuthenticated() && isWorkspaceViewer(resource.data.workspaceId);
+      allow create: if isAuthenticated() && isValidMediaAsset() && isWorkspaceEditor(request.resource.data.workspaceId);
+      allow update: if isAuthenticated() && isWorkspaceEditor(resource.data.workspaceId) &&
+                       isValidMediaAsset() &&
+                       request.resource.data.workspaceId == resource.data.workspaceId &&
+                       request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isAuthenticated() && isWorkspaceEditor(resource.data.workspaceId);
+    }
+
+    match /competitors/{competitorId} {
+      allow read: if isAuthenticated() && isWorkspaceViewer(resource.data.workspaceId);
+      allow create: if isAuthenticated() && isValidCompetitor() && isWorkspaceEditor(request.resource.data.workspaceId);
+      allow delete: if isAuthenticated() && isWorkspaceEditor(resource.data.workspaceId);
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && isValidNotification() && request.resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && 
+                       isValidNotification() &&
+                       request.resource.data.userId == resource.data.userId &&
+                       request.resource.data.createdAt == resource.data.createdAt;
+    }
+  }
+}

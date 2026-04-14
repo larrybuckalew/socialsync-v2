@@ -1,0 +1,5 @@
+{
+  "name": "SocialSync",
+  "description": "A centralized social media management dashboard to schedule and automate posts across multiple platforms.",
+  "requestFramePermissions": []
+}
