@@ -5,10 +5,10 @@ import session from 'express-session';
 import { TwitterApi } from 'twitter-api-v2';
 import axios from 'axios';
 
-dotenv.config();
+dotenv.config({ path: path.join(process.cwd(), '.env.local') });
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 app.set('trust proxy', 1); // Trust first proxy for secure cookies and correct protocol
 
@@ -24,6 +24,57 @@ app.use(session({
     maxAge: 24 * 60 * 60 * 1000 // 24 hours
   }
 }));
+
+// --- AI Generation Proxy (server-side — keeps keys secret) ---
+// Routes to Groq (primary, free tier) or Gemini (fallback)
+app.post('/api/ai/generate', async (req, res) => {
+  try {
+    const { prompt, model, provider } = req.body;
+    if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
+
+    let text = '';
+    const useProvider = provider || 'groq';
+
+    if (useProvider === 'groq') {
+      const apiKey = process.env.GROQ_API_KEY;
+      const response = await axios.post(
+        'https://api.groq.com/openai/v1/chat/completions',
+        {
+          model: model || 'llama-3.1-8b-instant',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.7,
+          max_tokens: 2048,
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 30000,
+        }
+      );
+      text = response.data?.choices?.[0]?.message?.content || '';
+    } else if (useProvider === 'gemini') {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not configured' });
+      const modelName = model || 'gemini-3-flash-preview';
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+      const response = await axios.post(url, {
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
+      }, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 30000,
+      });
+      text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    }
+
+    res.json({ text });
+  } catch (err: any) {
+    console.error('AI generation error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data?.error?.message || err.message });
+  }
+});
 
 // --- OAuth Routes ---
 
@@ -76,7 +127,9 @@ app.get('/api/auth/twitter/callback', async (req, res) => {
       redirectUri: callbackUrl,
     });
 
-    const { data: userObject } = await loggedClient.v2.me();
+    const { data: userObject } = await loggedClient.v2.me({
+      "user.fields": ["public_metrics", "profile_image_url"]
+    });
 
     // Send the tokens back to the frontend window that opened the popup
     const html = `
@@ -91,7 +144,9 @@ app.get('/api/auth/twitter/callback', async (req, res) => {
                 accessToken: '${accessToken}',
                 refreshToken: '${refreshToken}',
                 username: '${userObject.username}',
-                id: '${userObject.id}'
+                id: '${userObject.id}',
+                followers: ${userObject.public_metrics?.followers_count || 0},
+                avatar: '${userObject.profile_image_url}'
               }
             }, '*');
             window.close();
