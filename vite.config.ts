@@ -7,9 +7,7 @@ export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   return {
     plugins: [react(), tailwindcss()],
-    define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-    },
+    // No server secrets are injected into the browser bundle. Only VITE_* vars are exposed (Firebase web config).
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

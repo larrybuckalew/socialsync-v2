@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 
-// Helper: call server-side AI proxy instead of Gemini SDK directly
+import { apiFetch } from './firebase';
+
+// Helper: call the server-side AI proxy (API keys live only on the server).
 async function callAI(prompt: string, fallback: string = ""): Promise<string> {
   try {
-    const res = await fetch('/api/ai/generate', {
+    const res = await apiFetch('/api/ai/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt, provider: 'groq' })
@@ -109,12 +111,12 @@ const AI_TEMPLATES = [
   { id: 'blog', name: 'Blog Teaser', prompt: 'Write a short, intriguing teaser for a blog post. Include a call to action.' },
 ];
 
-import { db, auth, storage, signInWithGoogle, logOut, handleFirestoreError, OperationType } from './firebase';
+import { db, auth, storage, signInWithGoogle, signInWithEmail, logOut, handleFirestoreError, OperationType } from './firebase';
 import { collection, query, where, onSnapshot, addDoc, updateDoc, doc, getDocs, setDoc, deleteDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { onAuthStateChanged, User } from 'firebase/auth';
 
-type Platform = 'twitter' | 'facebook' | 'instagram' | 'tiktok' | 'pinterest' | 'linkedin' | 'youtube' | 'reddit' | 'telegram' | 'wordpress' | 'ghl';
+type Platform = 'twitter' | 'facebook' | 'instagram' | 'tiktok' | 'pinterest' | 'linkedin' | 'linkedin_page' | 'youtube' | 'reddit' | 'telegram' | 'wordpress' | 'ghl';
 
 interface Workspace {
   id: string;
@@ -521,11 +523,45 @@ const MediaLibrary = ({ workspaceId, onSelectAsset, isModal = false, showToast, 
   );
 };
 
+function EmailSignIn() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setBusy(true);
+    try {
+      await signInWithEmail(email, password);
+    } catch (err: any) {
+      const code = err?.code || '';
+      setError(code === 'auth/too-many-requests' ? 'Too many attempts. Try again later.' : 'Invalid email or password');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form onSubmit={submit} className="mt-6 space-y-3 text-left">
+      <p className="text-xs text-gray-400 text-center">or sign in with email</p>
+      <input type="email" required placeholder="Email address" value={email} onChange={e => setEmail(e.target.value)}
+        className="w-full border border-gray-300 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+      <input type="password" required placeholder="Password" value={password} onChange={e => setPassword(e.target.value)}
+        className="w-full border border-gray-300 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+      {error && <p className="text-red-500 text-sm">{error}</p>}
+      <button type="submit" disabled={busy} className="w-full border border-indigo-600 text-indigo-700 hover:bg-indigo-50 font-medium py-2.5 rounded-xl">
+        {busy ? 'Signing in…' : 'Sign in with email'}
+      </button>
+    </form>
+  );
+}
+
 const platformConfig: Record<Platform, { icon: any, color: string, name: string }> = {
   twitter: { icon: Twitter, color: 'bg-sky-500', name: 'X (Twitter)' },
   facebook: { icon: Facebook, color: 'bg-blue-600', name: 'Meta Business Suite (Facebook)' },
   instagram: { icon: Instagram, color: 'bg-pink-600', name: 'Meta Business Suite (Instagram)' },
-  linkedin: { icon: Linkedin, color: 'bg-blue-700', name: 'LinkedIn' },
+  linkedin: { icon: Linkedin, color: 'bg-blue-700', name: 'LinkedIn (personal)' },
+  linkedin_page: { icon: Linkedin, color: 'bg-blue-900', name: 'LinkedIn Page (company)' },
   tiktok: { icon: Music, color: 'bg-black', name: 'TikTok' },
   pinterest: { icon: Pin, color: 'bg-red-600', name: 'Pinterest' },
   youtube: { icon: Youtube, color: 'bg-red-500', name: 'YouTube' },
@@ -748,7 +784,7 @@ export default function App() {
   const [ollamaModel, setOllamaModel] = useState('llama3');
   const [openRouterApiKey, setOpenRouterApiKey] = useState('');
   const [openRouterModel, setOpenRouterModel] = useState('meta-llama/llama-3-8b-instruct:free');
-  const [groqApiKey, setGroqApiKey] = useState('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');
+  const [groqApiKey, setGroqApiKey] = useState(''); // unused: the Groq key lives on the server (GROQ_API_KEY)
   const [groqModel, setGroqModel] = useState('llama3-8b-8192');
 
   // AI Calendar Generator State
@@ -757,7 +793,7 @@ export default function App() {
   const [calendarGenPlatforms, setCalendarGenPlatforms] = useState<Platform[]>(['twitter']);
   const [isGeneratingCalendar, setIsGeneratingCalendar] = useState(false);
   const [generatedCalendarPreview, setGeneratedCalendarPreview] = useState<any[]>([]);
-  const [n8nWebhookUrl, setN8nWebhookUrl] = useState('https://n8n.aisetuppros.com/webhook/social-sync');
+  const [n8nWebhookUrl, setN8nWebhookUrl] = useState('');
   const [trendAlerts, setTrendAlerts] = useState<string[]>([]);
   const [generatedApiKey, setGeneratedApiKey] = useState<string | null>(null);
   const [isGeneratingApiKey, setIsGeneratingApiKey] = useState(false);
@@ -803,7 +839,8 @@ export default function App() {
           "reason": "A short 1-sentence explanation of why this time is optimal based on the data or trends."
         }`;
 
-		const responseText = await callAI(prompt, null);
+		const response = { text: await callAI(prompt, '') };
+      const responseText = response.text;
 
         const cleanedText = responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
         const result = JSON.parse(cleanedText);
@@ -975,14 +1012,14 @@ export default function App() {
     const platform = post.platforms[0];
     const oauthData = oauthConnections[platform];
     
-    if (!oauthData || !oauthData.accessToken) {
+    if (!oauthData) {
       // If no native connection, we can't fetch real analytics.
       // We'll offer to simulate them with AI for demo purposes.
       return;
     }
 
     try {
-      const response = await fetch(`/api/analytics/${platform}/${post.id}?accessToken=${oauthData.accessToken}`);
+      const response = await apiFetch(`/api/analytics/${platform}/${encodeURIComponent((post as any).platformPostIds?.[platform] || post.id)}?workspaceId=${encodeURIComponent(activeWorkspace)}`);
       if (!response.ok) throw new Error('Failed to fetch analytics');
       const { data } = await response.json();
       
@@ -1144,7 +1181,8 @@ export default function App() {
       let resultText = '';
 
       if (aiProvider === 'gemini') {
-		const responseText = await callAI(prompt, null);
+		const response = { text: await callAI(prompt, '') };
+      const responseText = response.text;
 
         if (response.text) {
           resultText = response.text;
@@ -1193,17 +1231,9 @@ export default function App() {
           resultText = data.choices[0].message.content;
         }
       } else if (aiProvider === 'groq') {
-        if (!groqApiKey) {
-          showToast("Please enter your Groq API Key in settings.", 'error');
-          setIsGenerating(false);
-          return;
-        }
-        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        const response = await apiFetch('/api/ai/groq/chat', {
           method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${groqApiKey}`,
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             model: groqModel,
             messages: [{ role: 'user', content: prompt }],
@@ -1325,7 +1355,8 @@ Content:
 "${content}"`;
 
       if (aiProvider === 'gemini') {
-		const responseText = await callAI(prompt, null);
+		const response = { text: await callAI(prompt, '') };
+      const responseText = response.text;
         if (response.text) {
           const hashtags = response.text.trim();
           setContent(prev => `${prev}\n\n${hashtags}`);
@@ -1359,7 +1390,8 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
       let improvedContent = '';
 
       if (aiProvider === 'gemini') {
-		const responseText = await callAI(prompt, null);
+		const response = { text: await callAI(prompt, '') };
+      const responseText = response.text;
         if (response.text) improvedContent = response.text;
       } else if (aiProvider === 'ollama') {
         const response = await fetch(`${ollamaEndpoint.replace(/\/$/, '')}/api/generate`, {
@@ -1399,17 +1431,9 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
           improvedContent = data.choices[0].message.content;
         }
       } else if (aiProvider === 'groq') {
-        if (!groqApiKey) {
-          showToast("Please enter your Groq API Key in settings.", 'error');
-          setIsImproving(false);
-          return;
-        }
-        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        const response = await apiFetch('/api/ai/groq/chat', {
           method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${groqApiKey}`,
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             model: groqModel,
             messages: [{ role: 'user', content: prompt }],
@@ -1572,7 +1596,8 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
       - "platforms": An array of strings (e.g., ["twitter"], ["linkedin"], ["instagram", "facebook"]).
       Do not include markdown blocks like \`\`\`json. Just the array.`;
 
-		const responseText = await callAI(prompt, null);
+		const response = { text: await callAI(prompt, '') };
+      const responseText = response.text;
 
       const text = response.text || "[]";
       const cleanedText = text.replace(/```json/gi, '').replace(/```/g, '').trim();
@@ -1715,14 +1740,13 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
         setGhlApiKey(data.ghlApiKey || '');
         setGhlLocationId(data.ghlLocationId || '');
         setConnectedPlatforms(data.connectedPlatforms || []);
-        setOauthConnections(data.oauthConnections || {});
+        // OAuth connections are loaded from the server (/api/connections); never from Firestore.
       } else {
         setAutoReplyEnabled(false);
         setAiPersona('');
         setGhlApiKey('');
         setGhlLocationId('');
         setConnectedPlatforms([]);
-        setOauthConnections({});
       }
     }, (error) => {
       handleFirestoreError(error, OperationType.GET, `automationSettings/${activeWorkspace}`);
@@ -2023,89 +2047,75 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
         return; // Stop execution if we can't save to DB
       }
 
-      // Native Publishing (if status === 'published')
+      const mediaUrls = (postMediaAssets || []).map((a: any) => a?.url).filter((u: any) => typeof u === 'string' && u.startsWith('https://'));
+
+      // Publish now: the server publishes with the tokens it stores (encrypted); nothing secret is sent from the browser.
       if (status === 'published') {
-        let nativeSuccessCount = 0;
-        const publishPromises = selectedPlatforms.map(async (platform) => {
-          const oauthData = oauthConnections[platform];
-          if (oauthData && oauthData.accessToken) {
-            try {
-              const res = await fetch(`/api/publish/${platform}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  accessToken: oauthData.accessToken,
-                  text: content
-                })
-              });
-              if (!res.ok) throw new Error(`Failed to publish to ${platform}`);
-              
-              if (['tiktok', 'youtube', 'pinterest'].includes(platform)) {
-                showToast(`${platformConfig[platform].name} publishing successful! (Note: In this preview, we simulate the final API call for media-heavy platforms).`, 'success');
-              } else {
-                nativeSuccessCount++;
-              }
-              
-              return { platform, success: true };
-            } catch (e) {
-              console.error(`Native publish error for ${platform}:`, e);
-              return { platform, success: false, error: e };
-            }
+        const platformErrors: Record<string, string> = {};
+        const platformPostIds: Record<string, string> = {};
+        await Promise.all(selectedPlatforms.map(async (platform) => {
+          try {
+            const res = await apiFetch(`/api/publish/${platform}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ workspaceId: activeWorkspace, text: (isPlatformSpecificMode && platformSpecificContent[platform]) || content, mediaUrls })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+            platformPostIds[platform] = data.postId;
+          } catch (e: any) {
+            platformErrors[platform] = e?.message || 'Failed';
           }
-          return { platform, success: false, error: 'No native connection' };
-        });
-        
-        await Promise.all(publishPromises);
-        if (nativeSuccessCount > 0) {
-           showToast(`Successfully published natively to ${nativeSuccessCount} platform(s)!`, 'success');
+        }));
+        const okCount = Object.keys(platformPostIds).length;
+        try {
+          await updateDoc(doc(db, 'posts', docRef.id), {
+            status: okCount === selectedPlatforms.length ? 'published' : okCount > 0 ? 'published' : 'failed',
+            platformPostIds,
+            errorDetails: Object.keys(platformErrors).length ? platformErrors : null
+          });
+        } catch (updateError) {
+          handleFirestoreError(updateError, OperationType.UPDATE, `posts/${docRef.id}`);
         }
+        if (Object.keys(platformErrors).length) {
+          setSubmissionErrors(platformErrors);
+          showToast(`Published to ${okCount}/${selectedPlatforms.length}. Problems:\n${Object.entries(platformErrors).map(([p, e]) => `${p}: ${e}`).join('\n')}`, okCount ? 'info' : 'error');
+          setIsSubmitting(false);
+          return;
+        }
+        showToast(`Published to ${okCount} platform(s)!`, 'success');
       }
 
-      // Forward to n8n (only if scheduled and webhook exists)
-      if (status === 'scheduled' && n8nWebhookUrl) {
+      // Scheduled: hand the post to the SocialSync server's built-in scheduler.
+      if (status === 'scheduled') {
         try {
-          const response = await fetch(n8nWebhookUrl, {
+          const scheduledAt = new Date(`${finalScheduleDate}T${finalScheduleTime}`).toISOString();
+          const res = await apiFetch('/api/posts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              type: 'new_post',
               workspaceId: activeWorkspace,
-              post: { id: docRef.id, ...newPostData }
+              firestorePostId: docRef.id,
+              content,
+              platformContent: isPlatformSpecificMode ? platformSpecificContent : null,
+              platforms: selectedPlatforms,
+              scheduledAt,
+              mediaUrls
             })
           });
-
-          if (!response.ok) {
-            let errorData;
-            try {
-              errorData = await response.json();
-            } catch (e) {
-              errorData = { message: `Server returned ${response.status}` };
-            }
-            
-            if (errorData.platformErrors) {
-              setSubmissionErrors(errorData.platformErrors);
-              try {
-                await updateDoc(doc(db, 'posts', docRef.id), { status: 'failed', errorDetails: errorData.platformErrors });
-              } catch (updateError) {
-                handleFirestoreError(updateError, OperationType.UPDATE, `posts/${docRef.id}`);
-              }
-              showToast(`Post saved, but failed to schedule on some platforms:\n${Object.entries(errorData.platformErrors).map(([p, e]) => `${p}: ${e}`).join('\n')}`, 'error');
-              setIsSubmitting(false);
-              return; // Don't clear form if they want to fix it
-            } else {
-              throw new Error(errorData.message || 'Failed to forward to n8n');
-            }
-          }
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          await updateDoc(doc(db, 'posts', docRef.id), { serverPostId: data.post.id });
         } catch (e) {
-          console.error("Failed to forward to n8n", e);
+          console.error('Failed to queue post on the server', e);
           try {
             await updateDoc(doc(db, 'posts', docRef.id), { status: 'failed', errorDetails: { general: e instanceof Error ? e.message : 'Network error' } });
           } catch (updateError) {
             handleFirestoreError(updateError, OperationType.UPDATE, `posts/${docRef.id}`);
           }
-          showToast(`Post saved locally, but failed to reach n8n webhook: ${e instanceof Error ? e.message : 'Unknown error'}. Please check your n8n URL and connection.`, 'error');
+          showToast(`Post saved, but the scheduler did not accept it: ${e instanceof Error ? e.message : 'Unknown error'}`, 'error');
           setIsSubmitting(false);
-          return; // Don't clear form so user can retry
+          return;
         }
       }
 
@@ -2142,7 +2152,6 @@ Return ONLY the improved content, no explanations, no introductory text, no quot
         ghlApiKey,
         ghlLocationId,
         connectedPlatforms,
-        oauthConnections,
         updatedAt: new Date().toISOString()
       };
       await setDoc(doc(db, 'automationSettings', activeWorkspace), settingsData);
@@ -2213,7 +2222,8 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
       let generatedReply = '';
 
       if (aiProvider === 'gemini') {
-		const responseText = await callAI(prompt, null);
+		const response = { text: await callAI(prompt, '') };
+      const responseText = response.text;
         if (response.text) generatedReply = response.text;
       } else if (aiProvider === 'ollama') {
         const response = await fetch(`${ollamaEndpoint.replace(/\/$/, '')}/api/generate`, {
@@ -2253,17 +2263,9 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
           generatedReply = data.choices[0].message.content;
         }
       } else if (aiProvider === 'groq') {
-        if (!groqApiKey) {
-          showToast("Please enter your Groq API Key in settings.", 'error');
-          setReplyingToCommentId(null);
-          return;
-        }
-        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        const response = await apiFetch('/api/ai/groq/chat', {
           method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${groqApiKey}`,
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             model: groqModel,
             messages: [{ role: 'user', content: prompt }],
@@ -2315,7 +2317,8 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
       let generatedText = '';
 
       if (aiProvider === 'gemini') {
-		const responseText = await callAI(prompt, null);
+		const response = { text: await callAI(prompt, '') };
+      const responseText = response.text;
         if (response.text) generatedText = response.text;
       } else if (aiProvider === 'ollama') {
         const response = await fetch(`${ollamaEndpoint.replace(/\/$/, '')}/api/generate`, {
@@ -2354,17 +2357,9 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
           generatedText = data.choices[0].message.content;
         }
       } else if (aiProvider === 'groq') {
-        if (!groqApiKey) {
-          showToast("Please enter your Groq API Key in settings.", 'error');
-          setIsGeneratingCalendar(false);
-          return;
-        }
-        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        const response = await apiFetch('/api/ai/groq/chat', {
           method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${groqApiKey}`,
-            'Content-Type': 'application/json'
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             model: groqModel,
             messages: [{ role: 'user', content: prompt }]
@@ -2434,7 +2429,8 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
       
       Return a concise description of this voice that can be used to instruct an AI to write in this style.`;
 
-		const responseText = await callAI(prompt, null);
+		const response = { text: await callAI(prompt, '') };
+      const responseText = response.text;
 
       if (response.text) {
         setVoiceProfile(response.text);
@@ -2475,7 +2471,8 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
       
       Return ONLY the rewritten post text.`;
 
-		const responseText = await callAI(prompt, null);
+		const response = { text: await callAI(prompt, '') };
+      const responseText = response.text;
 
       if (response.text) {
         setContent(response.text.trim());
@@ -2509,7 +2506,8 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
       let generatedText = '';
 
       if (aiProvider === 'gemini') {
-		const responseText = await callAI(prompt, null);
+		const response = { text: await callAI(prompt, '') };
+      const responseText = response.text;
         if (response.text) generatedText = response.text;
       } else if (aiProvider === 'ollama') {
         const response = await fetch(`${ollamaEndpoint.replace(/\/$/, '')}/api/generate`, {
@@ -2548,17 +2546,9 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
           generatedText = data.choices[0].message.content;
         }
       } else if (aiProvider === 'groq') {
-        if (!groqApiKey) {
-          showToast("Please enter your Groq API Key in settings.", 'error');
-          setIsGeneratingIdeas(false);
-          return;
-        }
-        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        const response = await apiFetch('/api/ai/groq/chat', {
           method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${groqApiKey}`,
-            'Content-Type': 'application/json'
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             model: groqModel,
             messages: [{ role: 'user', content: prompt }]
@@ -2603,7 +2593,8 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
 
       Do not include markdown blocks like \`\`\`json. Just the array.`;
 
-		const responseText = await callAI(prompt, null);
+		const response = { text: await callAI(prompt, '') };
+      const responseText = response.text;
 
       if (response.text) {
         try {
@@ -2659,7 +2650,6 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
         ghlApiKey,
         ghlLocationId,
         connectedPlatforms: newPlatforms,
-        oauthConnections,
         updatedAt: new Date().toISOString()
       }, { merge: true });
     } catch (error) {
@@ -2674,7 +2664,7 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
     const top = window.screen.height / 2 - height / 2;
     
     try {
-      const response = await fetch(`/api/auth/${platform}/login?workspaceId=${activeWorkspace}`);
+      const response = await apiFetch(`/api/auth/${platform}/login?workspaceId=${encodeURIComponent(activeWorkspace)}`);
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(errorText || 'Failed to get auth URL');
@@ -2692,31 +2682,80 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
     }
   };
 
+  const loadServerConnections = async (workspaceId: string) => {
+    try {
+      const res = await apiFetch(`/api/connections?workspaceId=${encodeURIComponent(workspaceId)}`);
+      if (!res.ok) return;
+      const { connections } = await res.json();
+      const map: Record<string, any> = {};
+      for (const c of connections || []) map[c.platform] = c;
+      setOauthConnections(map);
+    } catch (e) {
+      console.error('Failed to load connections', e);
+    }
+  };
+
+  useEffect(() => {
+    if (user && activeWorkspace) loadServerConnections(activeWorkspace);
+  }, [user, activeWorkspace]);
+
+  // Keep Firestore post status in sync with the server scheduler's results.
+  useEffect(() => {
+    if (!user || !activeWorkspace) return;
+    let cancelled = false;
+    const sync = async () => {
+      try {
+        const res = await apiFetch(`/api/posts?workspaceId=${encodeURIComponent(activeWorkspace)}`);
+        if (!res.ok) return;
+        const { posts: serverPosts } = await res.json();
+        for (const sp of serverPosts || []) {
+          if (cancelled || !sp.firestorePostId || ['scheduled', 'publishing', 'cancelled'].includes(sp.status)) continue;
+          const local = posts.find(p => p.id === sp.firestorePostId) as any;
+          const newStatus = sp.status === 'partial' ? 'published' : sp.status;
+          if (local && (local.status !== newStatus || local.serverSyncedAt !== sp.updatedAt)) {
+            const platformPostIds: Record<string, string> = {};
+            const errorDetails: Record<string, string> = {};
+            for (const [pl, r] of Object.entries<any>(sp.results || {})) {
+              if (r.postId) platformPostIds[pl] = r.postId;
+              if (r.error) errorDetails[pl] = r.error;
+            }
+            await updateDoc(doc(db, 'posts', sp.firestorePostId), {
+              status: newStatus, platformPostIds, errorDetails: Object.keys(errorDetails).length ? errorDetails : null, serverSyncedAt: sp.updatedAt
+            }).catch(() => {});
+          }
+        }
+      } catch { /* offline or not signed in */ }
+    };
+    sync();
+    const t = setInterval(sync, 60000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [user, activeWorkspace, posts]);
+
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
-      if (event.data?.type === 'OAUTH_SUCCESS') {
-        const { platform, workspaceId, data } = event.data;
-        if (workspaceId === activeWorkspace) {
-           const newConnections = { ...oauthConnections, [platform]: data };
-           setOauthConnections(newConnections);
-           const newPlatforms = connectedPlatforms.includes(platform as Platform) ? connectedPlatforms : [...connectedPlatforms, platform as Platform];
-           setConnectedPlatforms(newPlatforms);
-           
-           try {
-             await setDoc(doc(db, 'automationSettings', activeWorkspace), {
-               oauthConnections: newConnections,
-               connectedPlatforms: newPlatforms
-             }, { merge: true });
-             showToast(`Successfully connected ${platformConfig[platform as Platform]?.name || platform}!`, 'success');
-           } catch (error) {
-             console.error("Failed to save oauth connection:", error);
-           }
+      // Only trust messages from our own OAuth popup (same origin).
+      if (event.origin !== window.location.origin) return;
+      const msg = event.data;
+      if (msg?.type === 'OAUTH_ERROR') {
+        showToast(msg.error || 'Connection failed', 'error');
+        return;
+      }
+      if (msg?.type === 'OAUTH_SUCCESS' && msg.workspaceId === activeWorkspace) {
+        await loadServerConnections(activeWorkspace);
+        const added = (msg.accounts || []).map((a: any) => a.platform as Platform);
+        const newPlatforms = Array.from(new Set([...connectedPlatforms, ...added]));
+        setConnectedPlatforms(newPlatforms);
+        try {
+          await setDoc(doc(db, 'automationSettings', activeWorkspace), { connectedPlatforms: newPlatforms }, { merge: true });
+        } catch (error) {
+          console.error('Failed to save connected platforms:', error);
         }
+        showToast(`Connected ${(msg.accounts || []).map((a: any) => `${platformConfig[a.platform as Platform]?.name || a.platform} (${a.username})`).join(', ')}`, 'success');
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [activeWorkspace, oauthConnections, connectedPlatforms]);
+  }, [activeWorkspace, connectedPlatforms]);
 
   if (!isAuthReady) {
     return (
@@ -2741,6 +2780,7 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
           >
             Sign in with Google
           </button>
+          <EmailSignIn />
         </div>
       </div>
     );
@@ -2859,13 +2899,7 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
                 <div className="space-y-4 p-4 bg-gray-50 rounded-xl border border-gray-100">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Groq API Key</label>
-                    <input 
-                      type="password" 
-                      value={groqApiKey}
-                      onChange={(e) => setGroqApiKey(e.target.value)}
-                      placeholder="gsk_..."
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    />
+                    <p className="text-xs text-gray-500">Stored securely on the server (GROQ_API_KEY). Nothing to enter here.</p>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Model Name</label>
@@ -2904,7 +2938,7 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
                   placeholder="https://n8n.aisetuppros.com/webhook/..."
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 outline-none"
                 />
-                <p className="text-xs text-gray-500 mt-1">If configured, scheduled posts will be automatically forwarded to this n8n webhook for execution.</p>
+                <p className="text-xs text-gray-500 mt-1">Optional: used for comment-reply automations. Scheduled posts are published by the SocialSync server itself (n8n hand-off is a server setting: PUBLISH_MODE=n8n).</p>
               </div>
 
               <div className="pt-4 border-t border-gray-200">
@@ -3518,15 +3552,36 @@ Return ONLY a JSON array of 3 strings. Do not include markdown blocks like \`\`\
                         {/* OAuth Connection Area */}
                         <div className="pt-3 border-t border-gray-200 flex items-center justify-between">
                           {oauthData ? (
-                            <div className="flex items-center text-sm text-green-700 font-medium">
-                              <div className="w-2 h-2 rounded-full bg-green-500 mr-2"></div>
-                              Connected as @{oauthData.username}
+                            <div className="flex flex-col text-sm text-green-700 font-medium gap-1">
+                              <div className="flex items-center">
+                                <div className="w-2 h-2 rounded-full bg-green-500 mr-2"></div>
+                                Connected as {oauthData.username}
+                              </div>
+                              {Array.isArray(oauthData.targets) && oauthData.targets.length > 1 && (
+                                <select
+                                  value={oauthData.selectedTargetId || ''}
+                                  onChange={async (e) => {
+                                    const res = await apiFetch(`/api/connections/${platform}/target`, {
+                                      method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ workspaceId: activeWorkspace, targetId: e.target.value })
+                                    });
+                                    if (res.ok) loadServerConnections(activeWorkspace); else showToast('Could not change the posting account', 'error');
+                                  }}
+                                  className="text-xs border border-gray-300 rounded px-2 py-1 text-gray-700"
+                                >
+                                  {oauthData.targets.map((t: any) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                </select>
+                              )}
+                              {oauthData.expiresAt && Date.parse(oauthData.expiresAt) < Date.now() + 7 * 864e5 && (
+                                <span className="text-xs text-amber-600">Access expires {moment(oauthData.expiresAt).fromNow()}; reconnect soon.</span>
+                              )}
+                              {(oauthData.warnings || []).map((w: string, i: number) => <span key={i} className="text-xs text-amber-600">{w}</span>)}
                             </div>
                           ) : (
                             <div className="text-sm text-gray-500">Not connected natively</div>
                           )}
                           
-                          {['twitter', 'linkedin', 'facebook', 'instagram', 'tiktok', 'youtube', 'pinterest'].includes(platform) && (
+                          {['twitter', 'linkedin', 'linkedin_page', 'facebook', 'instagram'].includes(platform) && (
                             <button
                               onClick={() => handleOAuthConnect(platform)}
                               className="text-xs font-medium text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg transition-colors"
